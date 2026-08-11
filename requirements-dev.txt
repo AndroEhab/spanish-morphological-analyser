@@ -1,0 +1,10 @@
+# Development dependencies: tests and the UI smoke test (on top of
+# requirements.txt).
+#
+# httpx is never imported by a project file, but it is REQUIRED by
+# starlette's TestClient (re-exported as fastapi.testclient, used by
+# tests/test_api.py) — do not remove it, the suite breaks without it.
+-r requirements.txt
+pytest
+httpx
+playwright

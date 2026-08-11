@@ -67,6 +67,15 @@ py -3 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
+`requirements.txt` covers everything needed to run the app and build the
+database. Contributors running the test suite or the UI smoke test install
+the dev requirements on top of it instead:
+
+```
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m playwright install chromium   # UI smoke test only
+```
+
 ## Build the database
 
 The real store reads `data/morph.sqlite` (~300 MB, produced from the source
@@ -131,8 +140,9 @@ ordering, form ordering, homographs, and error paths without touching the real
 MORPH_BACKEND=sqlite .venv\Scripts\python scripts/ui_smoke.py   # real backend
 ```
 
-Drives the real UI with Playwright (headless Chromium; `pip install playwright`
-+ `python -m playwright install chromium` first), exercises the full flow —
+Drives the real UI with Playwright (headless Chromium; installed via
+`requirements-dev.txt` — run `python -m playwright install chromium` once),
+exercises the full flow —
 dropdown, keyboard selection, ambiguity, paradigm sections, clitic expansion,
 latency — and captures screenshots to `scripts/screenshots/`.
 

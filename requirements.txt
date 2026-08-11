@@ -1,6 +1,9 @@
+# Runtime (serve the app) + build (produce data/morph.sqlite).
+#
+# uvicorn[standard] is NOT used: its extras (watchfiles/--reload,
+# python-dotenv, PyYAML, websockets, httptools) are all unused by this app,
+# and uvloop is not installable on Windows anyway. Plain uvicorn is enough.
 fastapi
-uvicorn[standard]
+uvicorn
 orjson
 openpyxl
-pytest
-httpx
