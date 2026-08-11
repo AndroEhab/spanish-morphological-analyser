@@ -1,0 +1,10 @@
+modelRoles:
+  default: anthropic/claude-opus-5:xhigh
+
+  fast_worker: opencode-go/deepseek-v4-flash:max
+  good_worker: opencode-go/deepseek-v4-pro:max
+
+task:
+  agentModelOverrides:
+    sonic: "@fast_worker"
+    task: "@good_worker"

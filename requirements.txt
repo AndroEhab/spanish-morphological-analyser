@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+orjson
+openpyxl
+pytest
+httpx

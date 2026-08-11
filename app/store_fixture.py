@@ -1,0 +1,256 @@
+"""FIXTURE BACKEND — replaced by the SQLite store once the pipeline lands.
+
+Data access layer for the morphological analyser. All data currently comes
+from a hand-authored JSON fixture at ``app/fixtures/sample.json``; the
+loading, indexing and lookup logic below is deliberately isolated in this
+module so that swapping in the real SQLite store touches only this file.
+
+The ``probar`` family in the fixture is SYNTHETIC STRESS-TEST SCAFFOLDING:
+it is not drawn from the real pipeline, and exists only to exercise UI
+limits (a POS group with 15+ members, a member with 300+ forms, uncommon
+POS tags ``name``/``phrase``, and a very long gloss).
+"""
+
+from __future__ import annotations
+
+import json
+from functools import lru_cache
+from pathlib import Path
+from unicodedata import normalize
+
+_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "sample.json"
+
+# POS group order for the family view: verb, noun, adj, adv, then anything
+# else alphabetically. Empty groups are omitted by the backend.
+_GROUP_ORDER = ["verb", "noun", "adj", "adv"]
+
+_POS_LABELS = {
+    "verb": "Verbs",
+    "noun": "Nouns",
+    "adj": "Adjectives",
+    "adv": "Adverbs",
+    "name": "Names",
+    "phrase": "Phrases",
+}
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip diacritics so matching is case- and accent-insensitive."""
+    decomposed = normalize("NFKD", text.casefold())
+    return "".join(ch for ch in decomposed if not _is_combining(ch))
+
+
+def _is_combining(ch: str) -> bool:
+    return 0x0300 <= ord(ch) <= 0x036F
+
+
+@lru_cache(maxsize=1)
+def _load() -> dict:
+    """Load the fixture once and build the search/analyze indexes."""
+    with open(_FIXTURE_PATH, encoding="utf-8") as fh:
+        fixture = json.load(fh)
+
+    families = fixture["families"]
+    for family in families:
+        head_lemma = family["head"]
+        for member in family["members"]:
+            member["is_head"] = member["lemma"] == head_lemma
+
+    # Flat search index: one record per (form, lemma, pos).
+    entries: list[dict] = []
+    by_id: dict[str, dict] = {}
+    lemmas: set[str] = set()
+    for family in families:
+        for member in family["members"]:
+            lemmas.add(member["lemma"])
+            for form in member["forms"]:
+                entry = {
+                    "id": f'{form["form"]}::{member["lemma"]}::{member["pos"]}',
+                    "form": form["form"],
+                    "folded": _fold(form["form"]),
+                    "lemma": member["lemma"],
+                    "pos": member["pos"],
+                    "label": form["form"],
+                    "gloss": member["gloss"],
+                    "freq": form["freq"],
+                    "is_lemma": form["is_lemma"],
+                    "features": list(form["features"]),
+                    "family": family,
+                    "member": member,
+                }
+                entries.append(entry)
+                by_id[entry["id"]] = entry
+
+    return {
+        "families": families,
+        "entries": entries,
+        "by_id": by_id,
+        "lemmas": lemmas,
+    }
+
+
+def _public_row(entry: dict) -> dict:
+    """Project one indexed entry onto the frozen API search-row shape."""
+    return {
+        "id": entry["id"],
+        "form": entry["form"],
+        "lemma": entry["lemma"],
+        "pos": entry["pos"],
+        "label": entry["label"],
+        "gloss": entry["gloss"],
+        "freq": entry["freq"],
+        "is_lemma": entry["is_lemma"],
+        "features": list(entry["features"]),
+    }
+
+
+def _apply_qualifiers(rows: list[dict]) -> list[dict]:
+    """Set ``qualifier`` (the row's own lemma) on rows whose surface form maps
+    to more than one lemma among the returned candidates."""
+    forms_with_many_lemmas: set[str] = set()
+    seen: dict[str, set[str]] = {}
+    for row in rows:
+        seen.setdefault(row["form"], set()).add(row["lemma"])
+    for form, lemmas in seen.items():
+        if len(lemmas) > 1:
+            forms_with_many_lemmas.add(form)
+    out = []
+    for row in rows:
+        out.append({**row, "qualifier": row["lemma"] if row["form"] in forms_with_many_lemmas else None})
+    return out
+
+
+def search(q: str, limit: int) -> list[dict]:
+    """Tiered, deterministic match over folded (case/accent-insensitive) keys:
+
+    - tier 0: folded form == folded query (exact form match)
+    - tier 1: folded form startswith query
+    - tier 2: folded form contains query
+
+    Within a tier: frequency descending, then form length ascending, then
+    form ascending, then lemma ascending. Rows for the same surface form
+    (different lemmas) are always adjacent, and the limit cuts whole
+    surface-form groups — a group is fully included or fully dropped,
+    never split across the boundary.
+    """
+    q = q.strip()
+    if not q:
+        return []
+    folded = _fold(q)
+    data = _load()
+
+    # Group matching entries by surface form. All rows of one form share a
+    # folded key, hence a tier; the group takes that tier.
+    groups: dict[str, dict] = {}
+    for entry in data["entries"]:
+        fk = entry["folded"]
+        if fk == folded:
+            tier = 0
+        elif fk.startswith(folded):
+            tier = 1
+        elif folded in fk:
+            tier = 2
+        else:
+            continue
+        groups.setdefault(entry["form"], {"tier": tier, "entries": []})
+        groups[entry["form"]]["entries"].append(entry)
+
+    def group_key(item: tuple[str, dict]) -> tuple:
+        form, group = item
+        best = max(e["freq"] for e in group["entries"])
+        return (group["tier"], -best, len(form), form)
+
+    ordered: list[list[dict]] = []
+    for form, group in sorted(groups.items(), key=group_key):
+        group["entries"].sort(key=lambda e: (-e["freq"], len(e["form"]), e["form"], e["lemma"]))
+        ordered.append(group["entries"])
+
+    selected: list[dict] = []
+    remaining = limit
+    for group in ordered:
+        if len(group) <= remaining:
+            selected.extend(group)
+            remaining -= len(group)
+        else:
+            break
+
+    rows = [_public_row(e) for e in selected]
+    return _apply_qualifiers(rows)
+
+
+def analyze(entry_id: str) -> dict | None:
+    """Family view for a single dictionary entry id; ``None`` -> 404."""
+    entry = _load()["by_id"].get(entry_id)
+    if entry is None:
+        return None
+
+    family = entry["family"]
+    head = next(m for m in family["members"] if m["is_head"])
+
+    def relation_label(relation: str) -> str:
+        if relation == "root":
+            return "root"
+        if relation.startswith("prefix:"):
+            return f"{relation[7:]} + {head['lemma']}"
+        if relation.startswith("suffix:"):
+            return f"{head['lemma']} + {relation[7:]}"
+        return relation
+
+    def member_view(member: dict) -> dict:
+        return {
+            "lemma": member["lemma"],
+            "gloss": member["gloss"],
+            "relation": member["relation"],
+            "relation_label": relation_label(member["relation"]),
+            "is_head": member["is_head"],
+            "forms": [
+                {
+                    "form": f["form"],
+                    "features": " \u00b7 ".join(f["features"]),
+                    "is_lemma": f["is_lemma"],
+                }
+                for f in member["forms"]
+            ],
+        }
+
+    # Group members by POS in canonical order; empty groups are omitted.
+    by_pos: dict[str, list[dict]] = {}
+    for member in family["members"]:
+        by_pos.setdefault(member["pos"], []).append(member_view(member))
+    extra = sorted(pos for pos in by_pos if pos not in _GROUP_ORDER)
+    group_order = [pos for pos in _GROUP_ORDER + extra if pos in by_pos]
+
+    groups = [
+        {
+            "pos": pos,
+            "pos_label": _POS_LABELS.get(pos, f"{pos}s".capitalize()),
+            "members": by_pos[pos],
+        }
+        for pos in group_order
+    ]
+
+    return {
+        "selected": {
+            "id": entry["id"],
+            "form": entry["form"],
+            "lemma": entry["lemma"],
+            "pos": entry["pos"],
+            "gloss": entry["gloss"],
+            "features": list(entry["features"]),
+        },
+        "family": {
+            "head": {"lemma": head["lemma"], "pos": head["pos"], "gloss": head["gloss"]},
+            "note": family["note"],
+            "groups": groups,
+        },
+    }
+
+
+def health() -> dict:
+    data = _load()
+    return {
+        "status": "ok",
+        "entries": len(data["entries"]),
+        "lemmas": len(data["lemmas"]),
+        "families": len(data["families"]),
+    }

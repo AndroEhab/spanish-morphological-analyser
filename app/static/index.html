@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spanish Morphological Analyser</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="page">
+    <header class="site-header">
+      <h1>Spanish Morphological Analyser</h1>
+      <p class="tagline">Pick a dictionary word form to see its whole derivational family.</p>
+
+      <div class="combobox-wrap">
+        <label class="visually-hidden" for="search-input">Search a Spanish word form</label>
+        <input
+          id="search-input"
+          type="text"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="search-listbox"
+          aria-autocomplete="list"
+          aria-activedescendant=""
+          placeholder="Type a word form — e.g. hizo, mienta, hechura"
+          autocomplete="off"
+          spellcheck="false"
+        >
+        <span id="kbd-hint" class="kbd-hint" hidden aria-hidden="true">&#8593;&#8595; navigate &middot; Enter select &middot; Esc close</span>
+        <ul id="search-listbox" class="listbox" role="listbox" hidden></ul>
+      </div>
+      <p id="search-status" class="search-status" role="status" aria-live="polite"></p>
+    </header>
+
+    <div id="loading" class="loading" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p>Analysing&hellip;</p>
+    </div>
+
+    <section id="analysis" class="analysis" hidden aria-label="Analysis"></section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
