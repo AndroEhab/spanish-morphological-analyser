@@ -169,14 +169,27 @@ tests/
 
 ## Data licensing & attribution
 
-This project is built on two external datasets, neither of which is shipped
-in this repository:
+See `docs/LICENSES.md` for the full audit (package licences, verbatim data
+terms, and the obligations per distribution scenario). In short:
 
 - Word data derives from English Wiktionary via kaikki.org's wiktextract
   extraction (<https://kaikki.org/dictionary/Spanish/>,
-  <https://en.wiktionary.org/>) and is licensed under CC BY-SA 3.0 and the
-  GFDL.
-- Frequency data comes from SUBTLEX-ESP (Cuetos, Glez-Nosti, Barbón &
-  Brysbaert), a research dataset redistributed by its own authors, not here.
+  <https://en.wiktionary.org/>) and is dual-licensed under **CC BY-SA 4.0**
+  (since 2023-06-01; previously 3.0) and the **GFDL** — reusers may comply
+  with either. kaikki.org states its data is "made available under the same
+  licenses as Wiktionary - both CC-BY-SA and GFDL".
+- Frequency data comes from **SUBTLEX-ESP** (Cuetos, Glez-Nosti, Barbón &
+  Brysbaert, 2011), which its authors distribute under a **CC BY-NC-ND 3.0**
+  licence (Attribution-NonCommercial-NoDerivs): non-commercial use only, and
+  no distribution of modified/derived forms. The built `data/morph.sqlite`
+  merges SUBTLEX frequencies with Wiktionary content, so redistributing the
+  database carries both CC BY-SA share-alike and the SUBTLEX NC/ND
+  restrictions — treat this as needing the authors' permission before any
+  distribution.
+- Neither source dataset is shipped in this repository. The bundled fixture
+  `app/fixtures/sample.json` is a small hand-curated sample: its glosses are
+  abridged from Wiktionary (CC BY-SA 4.0 applies), while its frequency
+  figures are hand-invented demo values — **not** the SUBTLEX data
+  (mechanically verified: no SUBTLEX value appears in the fixture).
 - Anyone rebuilding must obtain both datasets from the sources above under
   their respective terms.

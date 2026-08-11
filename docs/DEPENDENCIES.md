@@ -96,8 +96,8 @@ answers.
 
 | Dataset | Size on disk | Licence | Needed at runtime? |
 |---|---|---|---|
-| `kaikki.org-dictionary-Spanish.jsonl` (wiktextract extraction of the Spanish section of English Wiktionary, kaikki.org) | 1,026,541,959 B (~979 MB) | CC BY-SA 3.0 and GFDL (per README) | **No** |
-| `SUBTLEX-ESP.xlsx` (Cuetos, Glez-Nosti, Barbón & Brysbaert subtitle word frequencies) | 3,763,108 B (~3.6 MB) | research dataset, redistributed by its own authors, not shipped | **No** |
+| `kaikki.org-dictionary-Spanish.jsonl` (wiktextract extraction of the Spanish section of English Wiktionary, kaikki.org) | 1,026,541,959 B (~979 MB) | CC BY-SA 4.0 and GFDL (kaikki.org: "same licenses as Wiktionary"; Wiktionary dual-licensed CC BY-SA 4.0 + GFDL — see docs/LICENSES.md) | **No** |
+| `SUBTLEX-ESP.xlsx` (Cuetos, Glez-Nosti, Barbón & Brysbaert subtitle word frequencies) | 3,763,108 B (~3.6 MB) | CC BY-NC-ND 3.0 (per the CRR distribution page; non-commercial, no-derivatives — see docs/LICENSES.md) | **No** |
 
 Both are consumed only at build time by `pipeline/build.py`
 (`JSONL_PATH`/`SUBTLEX_PATH` at `pipeline/build.py:25-26`, fed into
@@ -290,9 +290,10 @@ Accurate statement of what would have to change (not implemented):
    (see §9); pinning exact versions remains open.
 2. **Ship the data**: either bundle `data/morph.sqlite` (295.4 MB) or keep a
    documented build step; the two raw datasets (~983 MB) stay out of any
-   distribution. The DB is derived from CC BY-SA 3.0/GFDL Wiktionary data and
-   SUBTLEX-ESP, so a redistributed build would carry attribution/SHARE-ALIKE
-   obligations.
+   distribution. The DB is derived from CC BY-SA 4.0/GFDL Wiktionary data (see
+   docs/LICENSES.md) and SUBTLEX-ESP (CC BY-NC-ND 3.0), so a redistributed
+   build would carry attribution/SHARE-ALIKE obligations plus the SUBTLEX
+   non-commercial/no-derivatives restrictions.
 3. **Kill the app→pipeline coupling**: `pipeline/normalize.py` is 2 KB of
    pure stdlib; inlining `fold` into `app/` (or moving normalize.py into
    `app/`) would make `app/` self-contained. The pipeline would keep its own

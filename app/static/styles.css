@@ -489,6 +489,23 @@ body {
 
 .show-all:hover { border-color: var(--accent); background: var(--accent-soft); }
 
+/* ---------- data attribution footer ---------- */
+.data-attribution {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+  font-size: .78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border);
+}
+
+.data-attribution a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ---------- misc ---------- */
 .visually-hidden {
   position: absolute;
@@ -502,6 +519,7 @@ body {
 
 @media (max-width: 480px) {
   .page { padding: 24px 14px 64px; }
+  .data-attribution { padding: 14px 14px 32px; }
   .site-header h1 { font-size: 1.5rem; }
   .entry-card .entry-form { font-size: 1.6rem; }
   .listbox { grid-template-columns: auto auto 1fr; }
