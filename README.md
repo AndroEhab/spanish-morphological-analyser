@@ -56,9 +56,7 @@ the bundled JSON fixture.
 ## Prerequisites
 
 - Python 3.11+ (developed on 3.13).
-- The two source data files at the repo root:
-  - `kaikki.org-dictionary-Spanish.jsonl` (Wiktionary dump, ~980 MB)
-  - `SUBTLEX-ESP.xlsx` (Spanish word frequencies, ~3.6 MB)
+- The two source datasets at the repo root — see [Source data](#source-data) below.
 - Windows: `py -3` is used below; on other platforms substitute `python3`.
 
 ## Setup
@@ -158,3 +156,17 @@ scripts/
 tests/
   conftest.py, test_api.py, test_pipeline.py, test_store_sqlite.py
 ```
+
+## Data licensing & attribution
+
+This project is built on two external datasets, neither of which is shipped
+in this repository:
+
+- Word data derives from English Wiktionary via kaikki.org's wiktextract
+  extraction (<https://kaikki.org/dictionary/Spanish/>,
+  <https://en.wiktionary.org/>) and is licensed under CC BY-SA 3.0 and the
+  GFDL.
+- Frequency data comes from SUBTLEX-ESP (Cuetos, Glez-Nosti, Barbón &
+  Brysbaert), a research dataset redistributed by its own authors, not here.
+- Anyone rebuilding must obtain both datasets from the sources above under
+  their respective terms.
