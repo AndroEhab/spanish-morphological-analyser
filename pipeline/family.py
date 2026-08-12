@@ -11,7 +11,7 @@ import re as _re
 
 from pipeline.normalize import fold, accent_strip
 from pipeline.paradigm import compute_allomorphs, strip_one_prefix, get_family_forming_buckets, compute_paradigm_key, build_paradigm_buckets
-
+from pipeline.etymology import _DERIV_SUFFIXES, _DERIV_PREFIXES
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
@@ -36,6 +36,11 @@ _ROOT_KEY_HUB = 400
 _MAX_INTERNAL_DEGREE = 50
 _MAX_E1_DEGREE = 30
 _MAX_BUCKET = 40
+# Minimum length of a truncated non-verb citation stem admitted to the
+# allomorph filter (E3/E4 gates).  Spanish derivation drops the final theme
+# vowel (cámara → camar- in camarero), but the truncated form is ONLY a
+# filter on independently-evidenced candidates, never an edge generator.
+_MIN_TRUNC_STEM = 4
 
 _BANNED_LANGS = frozenset({
     "ine-pro", "itc-pro", "gem-pro", "cel-pro", "grk-pro",
@@ -118,6 +123,54 @@ def _latin_first4_set(ancestors: set) -> set:
     return result
 
 
+def _allomorphs_for_gates(word: str, pos: str, forms: list) -> set[str]:
+    """Allomorph set used by the E4/E4b (derived/related) admission gates.
+
+    Extends compute_allomorphs with the truncated citation stem
+    (accent-folded word minus a final -a/-o/-e), bounded by _MIN_TRUNC_STEM.
+    Spanish derivation systematically drops the theme vowel (cámara →
+    camar- in camarero), and the truncated form admits such derivatives
+    through the allomorph test.  It is strictly a FILTER on candidates
+    evidenced by the dictionary's own derived/related word lists — it never
+    generates edges by itself.  It is deliberately NOT used by the E3
+    root-key gate, whose computed-key evidence collides with truncated
+    stems (measured rescue precision ~60% there vs ~97% here).
+    """
+    stems = compute_allomorphs(word, pos, forms)
+    if pos != "verb":
+        folded = accent_strip(word).lower()
+        if folded.endswith(("a", "o", "e")) and len(folded) - 1 >= _MIN_TRUNC_STEM:
+            stems = set(stems)
+            stems.add(folded[:-1])
+    return stems
+
+
+def _inflectional_variant_rank(base: str, cit: str) -> int:
+    """Rank how plausibly `base` is an inflected form of `cit` (2 > 1 > 0).
+
+    Compares both after dropping 0-2 final characters: rank 2 on an exact
+    (accent-preserving) match, rank 1 on an accent-folded match.  Symmetric
+    drops (i == j, e.g. seguida->seguido, sola->solo) need >=3 shared
+    characters; asymmetric drops (ceda->ceder) need >=4 — short form
+    homographs that are not inflectional variants fail with rank 0 and are
+    not resolved.
+    """
+    for rank, folded in ((2, False), (1, True)):
+        b = accent_strip(base).lower() if folded else base
+        c = accent_strip(cit).lower() if folded else cit
+        for i in range(3):
+            bpart = b[:-i] if i else b
+            for j in range(3):
+                cpart = c[:-j] if j else c
+                if bpart != cpart:
+                    continue
+                if i == j:
+                    if len(bpart) >= 3:
+                        return rank
+                elif len(bpart) >= 4 or (i == 1 and j == 0 and len(bpart) >= 3):
+                    return rank
+    return 0
+
 def _regenerate_affix_label(rlabel: str, ref_word: str) -> str:
     """Given an affix rlabel like 'des- + hacer', replace the reference word."""
     parts = rlabel.split(" + ", 1)
@@ -166,10 +219,9 @@ class FamilyBuilder:
         self.hub_root_keys: set[str] = set()
 
         self.allomorphs_cache: dict[int, set[str]] = {}
-
+        self._last_hubs: list[tuple[str, int]] = []
         self.families: dict[int, dict] = {}
         self.family_of: dict[int, int] = {}
-        self._last_hubs: list[tuple[str, int]] = []
 
     def load_lemmas(self, records):
         for rec in records:
@@ -188,24 +240,61 @@ class FamilyBuilder:
             pw = e["parent_word"]
             affix = e.get("affix", "")
             pids_raw = self.word_index.get(fold(pw), [])
-            # Only accept word-index matches where the lemma's word is the
-            # same as the parent word after accent-stripping (exact match
-            # excluding diacritics).  This prevents collisions like "sola"
-            # (feminine form) matching "Sola" (proper name).
-            pids = [p for p in pids_raw
-                    if self.lemmas[p]["word"] == pw
-                    or accent_strip(self.lemmas[p]["word"]) == accent_strip(pw)]
+            # Prefer EXACT word matches; fall back to accent-folded matches
+            # (template bases are routinely cited accent-free: "camara" ->
+            # cámara).  Exact-first keeps folded homographs from winning J2
+            # tie-breaks on codepoint order (baja vs bajá, mano vs maño).
+            exact = [p for p in pids_raw if self.lemmas[p]["word"] == pw]
+            pids = exact or [p for p in pids_raw
+                             if accent_strip(self.lemmas[p]["word"]) == accent_strip(pw)]
             if not pids:
+                # A derivational affix cited in the base slot must never
+                # resolve through the form table: "miento" is a suffix, not
+                # a base — resolving it to the lemma "mentir" produces
+                # nonsense edges like "mentir + embotellar".  Form-table
+                # resolution exists to find a genuine derivational base
+                # cited in an inflected form (sola → solo); affix-shaped
+                # words are excluded from it by identity, and capitalized
+                if accent_strip(pw).lower() in _DERIV_SUFFIXES | _DERIV_PREFIXES:
+                    continue
                 # Resolve component through form table when it is not a lemma
                 # (e.g. feminine form cited as base for -mente adverb).
                 form_pids = self.form_to_lemmas.get(fold(pw), set())
+                if pw[:1].isupper():
+                    # Capitalized bases are place/person names.  They may
+                    # resolve only to a case/plural variant of themselves
+                    # (Newton -> newton, Tortugas -> tortuga), never to a
+                    # similarly spelled verb (Aspe -> aspar, Muño -> munir).
+                    lpw = accent_strip(pw).lower()
+                    ok = [p for p in form_pids
+                          if accent_strip(self.lemmas[p]["word"]).lower() == lpw
+                          or (lpw.endswith("s")
+                              and accent_strip(self.lemmas[p]["word"]).lower() == lpw[:-1])]
+                    form_pids = set(ok) if ok else set()
                 if len(form_pids) == 1:
                     pids = list(form_pids)
                 elif len(form_pids) > 1:
-                    # Ambiguous: prefer candidates with non-adv POS (the
-                    # base of an adverb is almost never an adverb itself).
-                    non_adv = [p for p in form_pids if self.lemmas[p].get("pos") != "adv"]
-                    if non_adv:
+                    cites = {self.lemmas[p]["word"] for p in form_pids}
+                    if len(cites) == 1:
+                        # Same word, multiple POS entries: legacy choice.
+                        cands = [p for p in form_pids if self.lemmas[p].get("pos") != "adv"] or list(form_pids)
+                    else:
+                        # Heterogeneous form homographs: accept only
+                        # inflectional variants of the cited base
+                        # (sola→solo, manos→mano, follado→follar).
+                        # Non-variants (ceda vs ceder/cerda) must not
+                        # resolve at all.  Exact matches outrank
+                        # accent-folded ones (mano over maño).
+                        ranks = [(p, _inflectional_variant_rank(pw, self.lemmas[p]["word"]))
+                                 for p in form_pids]
+                        best_rank = max(r for _, r in ranks)
+                        cands = [p for p, r in ranks if r == best_rank] if best_rank > 0 else []
+                    if len(cands) == 1:
+                        pids = list(cands)
+                    elif len(cands) > 1:
+                        # Ambiguous: prefer candidates with non-adv POS (the
+                        # base of an adverb is almost never an adverb itself).
+                        non_adv = [p for p in cands if self.lemmas[p].get("pos") != "adv"] or cands
                         # Prefer adjective > noun > verb for derivational bases.
                         pos_pref = {"adj": 0, "noun": 1, "verb": 2}
                         best = min(non_adv, key=lambda p: (
@@ -214,6 +303,10 @@ class FamilyBuilder:
                         ))
                         pids = [best]
             for pid in pids:
+                if pid == cid:
+                    # A lemma must never be its own derivational base
+                    # (aquello resolves to the verb aquellar itself).
+                    continue
                 self.internal_children[pid].append((cid, affix))
                 self.internal_parents[cid].append((pid, affix))
         for lid in self.lemmas:
@@ -331,17 +424,31 @@ class FamilyBuilder:
 
     def build(self, reject_log_path=None):
         hubs = self._detect_hubs()
-
         top_deg = sorted(self.internal_degree.items(), key=lambda x: -x[1])[:20]
         print(f"    Top INTERNAL-degree lemmas:")
         graph: dict[int, set[tuple[int, str, str]]] = defaultdict(set)
         A_cache: dict[int, set[str]] = {}
+        A_derived_cache: dict[int, set[str]] = {}
 
         def get_A(lid):
+            # Plain allomorphs — used by the E3 root-key gate.  The truncated
+            # stem is NOT admitted here: E3's evidence is computed root keys
+            # (supine-T keys + first4 overlap), which collide with truncated
+            # stems (e.g. beleño ↔ belenismo via belen, carecer ↔ careo via
+            # care).  Measured rescue precision was ~60%, below the bar.
             if lid not in A_cache:
                 rec = self.lemmas[lid]
                 A_cache[lid] = compute_allomorphs(rec["word"], rec.get("pos", ""), rec.get("forms", []))
             return A_cache[lid]
+
+        def get_A_derived(lid):
+            # Gated allomorphs (truncated stem admitted) — used by the E4/E4b
+            # gates, whose evidence is the dictionary's own derived/related
+            # word lists.  Measured rescue precision ~97%.
+            if lid not in A_derived_cache:
+                rec = self.lemmas[lid]
+                A_derived_cache[lid] = _allomorphs_for_gates(rec["word"], rec.get("pos", ""), rec.get("forms", []))
+            return A_derived_cache[lid]
 
         # ---- E1: affix edges ----
         # Compute E1 degree first.
@@ -545,7 +652,7 @@ class FamilyBuilder:
         for lid in self.lemmas:
             if not self._eligible(lid):
                 continue
-            lA = get_A(lid)
+            lA = get_A_derived(lid)
             l_rks = set()
             for anc in self.lemma_ancestors.get(lid, ()):
                 l_rks.update(_latin_root_keys(anc))
@@ -576,7 +683,7 @@ class FamilyBuilder:
             if not self._eligible(lid):
                 continue
             lw = self.lemmas[lid]["word"].lower()
-            lA = get_A(lid)
+            lA = get_A_derived(lid)
             for rw in self.related_links.get(lid, []):
                 for rid in self.word_index.get(fold(rw), []):
                     if rid <= lid:
@@ -637,9 +744,9 @@ class FamilyBuilder:
                     b_pos = self.lemmas[b].get("pos", "?")
                     graph[a].add((b, "homograph", f"{a_pos} use of {self.lemmas[a]['word']}"))
                     graph[b].add((a, "homograph", f"{b_pos} use of {self.lemmas[a]['word']}"))
-
         print(f"    Graph built: {sum(len(v) for v in graph.values()) // 2} edges")
-
+        self.graph = graph
+ 
         # ---- Connected components ----
         visited: set[int] = set()
         components: list[set[int]] = []
@@ -774,7 +881,10 @@ class FamilyBuilder:
                 else:
                     members[mid] = {"relation": "root", "relation_label": "root"}
 
-            # Assert labels: reject empty, machine codes, and self-referential labels.
+            # Assert labels: reject empty, machine codes, and self-referential
+            # labels, and guard against the doubled-substring corruption that
+            # member-word replacement used to cause ("same paradigm as
+            # escarescarmentar" = prefix "escar" + head "escarmentar").
             for mid in comp:
                 if mid == head_id:
                     continue
@@ -783,13 +893,33 @@ class FamilyBuilder:
                     info = {}
                     members[mid] = info
                 label = info.get("relation_label", "")
+                relation = info.get("relation", "")
                 mw = self.lemmas[mid]["word"]
                 if not label or label in ("affix", "paradigm", "root-key", "derived", "homograph", "root"):
                     info["relation_label"] = f"related to {head_word}"
-                if mw in label and rel != "homograph":
+                    relation = "derived"
+                    label = info["relation_label"]
+                # Only affix labels may embed the member's own word (repaired
+                # against the immediate parent in the branch above).  Every
+                # other relation's label is generated from the family head
+                # and must never be re-substituted — replacing a member
+                # substring of the head word corrupts the label
+                # ("can" + "canino" -> "caninoino").
+                if relation == "affix" and mw in label:
                     info["relation_label"] = label.replace(mw, head_word)
                 if label.startswith("inherited from Latin ") and label[len("inherited from Latin "):] in {self.lemmas[l]["word"] for l in comp}:
                     info["relation_label"] = f"same root as {head_word}"
+                    relation = "root-key"
+                # Build-time assertions: paradigm and derived labels must
+                # name the family head, nothing else.
+                if relation == "paradigm" and info["relation_label"] != f"same paradigm as {head_word}":
+                    raise AssertionError(
+                        f"corrupted paradigm label for {mw!r}: {info['relation_label']!r} "
+                        f"(expected 'same paradigm as {head_word}')")
+                if relation == "derived" and info["relation_label"] != f"related to {head_word}":
+                    raise AssertionError(
+                        f"corrupted derived label for {mw!r}: {info['relation_label']!r} "
+                        f"(expected 'related to {head_word}')")
             self.families[fid_counter] = {"head_id": head_id, "members": members}
             for mid in members:
                 self.family_of[mid] = fid_counter

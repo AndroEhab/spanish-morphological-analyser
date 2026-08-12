@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from pipeline.normalize import fold, accent_strip
 from pipeline.etymology import parse_templates
 from pipeline.paradigm import compute_allomorphs, strip_one_prefix, get_family_forming_buckets, compute_paradigm_key, build_paradigm_buckets
-from pipeline.family import FamilyBuilder, _latin_root_keys, _is_usable_ancestor, _is_latin_ancestor
+from pipeline.family import FamilyBuilder, _latin_root_keys, _is_usable_ancestor, _is_latin_ancestor, _allomorphs_for_gates
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -59,11 +59,16 @@ def build_graph(lemma_records, lemma_forms_raw):
     builder.load_paradigm_buckets(lemma_forms_raw)
 
     derived_links = {}
+    related_links = {}
     for lid, rec in lemma_records.items():
-        dr = rec.get("derived_related", [])
+        dr = rec.get("derived", [])
         if dr:
             derived_links[lid] = dr
+        rl = rec.get("related", [])
+        if rl:
+            related_links[lid] = rl
     builder.load_derived_links(derived_links)
+    builder.load_related_links(related_links)
 
     builder._detect_hubs()
     # Build graph exactly as build() does
@@ -179,7 +184,7 @@ def build_graph(lemma_records, lemma_forms_raw):
     for lid in lemma_records:
         if not builder._eligible(lid):
             continue
-        l_allos = compute_allomorphs(lemma_records[lid]["word"], lemma_records[lid].get("pos", ""), lemma_records[lid].get("forms", []))
+        l_allos = _allomorphs_for_gates(lemma_records[lid]["word"], lemma_records[lid].get("pos", ""), lemma_records[lid].get("forms", []))
         for dw in derived_links.get(lid, []):
             for rid in builder.word_index.get(fold(dw), []):
                 if rid <= lid:

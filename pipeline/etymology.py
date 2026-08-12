@@ -13,7 +13,7 @@ from pipeline.normalize import fold_latin
 
 
 _INTERNAL_TEMPLATES = frozenset({
-    "af", "affix", "suffix", "suf", "prefix", "confix",
+    "af", "affix", "suffix", "suf", "prefix", "pre", "confix",
     "compound", "univerbation", "blend", "deverbal",
 })
 
@@ -53,6 +53,86 @@ _TREE_LANG_MAP = {
     "german": "de", "dutch": "nl", "sanskrit": "sa",
     "proto-semitic": "sem-pro", "proto-afroasiatic": "afa-pro",
 }
+
+# Closed inventory of Spanish derivational suffixes, used to recognize a
+# bare affix component by identity (wiktextract cites many affixes without
+# hyphens, and template variants place them outside the positional slots).
+_DERIV_SUFFIXES = frozenset({
+    "miento", "cion", "sion", "dor", "dora", "ero", "era", "eria",
+    "ista", "ismo", "idad", "edad", "anza", "encia", "ancia", "aje",
+    "azo", "ada", "ado", "ura", "ble", "ible", "able", "oso", "osa",
+    "illo", "illa", "ito", "ita", "on", "ona", "uelo", "eno", "ense",
+    "ico", "al", "ar", "orio", "ivo", "ante", "ente", "mente",
+})
+
+# Closed inventory of Spanish derivational prefixes.  Mirrors
+# family._SPANISH_PREFIXES (kept separate to avoid an import cycle:
+# family.py imports these inventories for the form-table guard).
+_DERIV_PREFIXES = frozenset({
+    "des", "re", "con", "contra", "en", "em", "entre", "mal", "bien",
+    "sobre", "sub", "super", "tras", "trans", "pre", "pro", "ante",
+    "anti", "in", "im", "ex", "extra", "per", "satis", "semi",
+    "auto", "co", "circun", "inter", "intra", "retro", "ultra", "vice",
+    "pos", "post",
+})
+
+
+def _normalize_affix_args(name: str, parts: list[tuple[str, str]]) -> None:
+    """Normalize bare affix components to hyphenated forms, in place.
+
+    wiktextract cites affixes bare in several template shapes:
+    - suffix/suf: positional rule (arg "3" = suffix) for the standard shape;
+      identity fallback for the last bare component when it is a known
+      derivational suffix and the positional rule did not fire.
+    - prefix/pre: arg "2" = prefix (positional), else identity on the
+      first bare component when it is a known prefix.
+    - everything else (af/affix/confix/compound/...): identity on the
+      FIRST bare component (known prefix) and the LAST bare component
+      (known suffix), with two guards so a base is never reclassified:
+      a bare component is not treated as a prefix when the last component
+      is already hyphenated (auto + -dromo: auto is the base), and not
+      treated as a suffix when the first component was hyphenated in the
+      source (anti- + edad, re- + bien: the remaining bare is the base).
+      With >=3 components both may fire (en- + red + -ar, geo- + centro +
+      -ismo); with exactly 2 components at most one fires.
+
+    Base slots are never reclassified by identity: the FIRST bare of
+    suffix/suf and the LAST bare of prefix/pre stay bases, so a base like
+    "mal" in "mal + -dad" or "oso" in "oso + -ar" survives.
+    """
+    def is_bare(v: str) -> bool:
+        return " " not in v and not (v.startswith("-") or v.endswith("-"))
+    if not parts:
+        return
+
+    if name in ("suffix", "suf"):
+        if len(parts) >= 2 and parts[-1][0] == "3" and is_bare(parts[-1][1]):
+            k, v = parts[-1]
+            parts[-1] = (k, "-" + v)
+        else:
+            k, v = parts[-1]
+            if is_bare(v) and v in _DERIV_SUFFIXES:
+                parts[-1] = (k, "-" + v)
+    elif name in ("prefix", "pre"):
+        if len(parts) >= 2 and parts[0][0] == "2" and is_bare(parts[0][1]):
+            k, v = parts[0]
+            parts[0] = (k, v + "-")
+        else:
+            k, v = parts[0]
+            if is_bare(v) and v in _DERIV_PREFIXES:
+                parts[0] = (k, v + "-")
+    else:  # af / affix / confix / compound / univerbation / blend / deverbal
+        first_hyphenated = not is_bare(parts[0][1])
+        last_hyphenated = not is_bare(parts[-1][1])
+        prefix_taken = False
+        if not last_hyphenated and is_bare(parts[0][1]) and parts[0][1] in _DERIV_PREFIXES:
+            k, v = parts[0]
+            parts[0] = (k, v + "-")
+            prefix_taken = True
+        if not first_hyphenated and is_bare(parts[-1][1]) and parts[-1][1] in _DERIV_SUFFIXES:
+            if not prefix_taken or len(parts) >= 3:
+                k, v = parts[-1]
+                parts[-1] = (k, "-" + v)
 
 
 def _detect_tree_lang(line: str) -> str | None:
@@ -94,23 +174,22 @@ def parse_templates(
 
         # INTERNAL edges
         if name in _INTERNAL_TEMPLATES and args.get("1") == "es":
-            affix_parts: list[str] = []
-            bases: list[str] = []
+            parts: list[tuple[str, str]] = []  # (key, cleaned value)
             for key in sorted(args.keys()):
-                if key == "1":
-                    continue
-                if key in ("text", "tree", "nocap", "nocat", "notext",
-                           "t", "t1", "t2", "t3", "t4",
-                           "lit", "pos", "id", "sc", "g", "g2", "g3",
-                           "tr", "ts", "sort", "nl", "keyword"):
+                if key == "1" or not key.isdigit():
                     continue
                 val = args[key]
                 if val and isinstance(val, str):
-                    val = re.sub(r'<[^>]*>', '', val)
-                    if val.startswith("-") or val.endswith("-"):
-                        affix_parts.append(val)
-                    elif " " not in val:
-                        bases.append(val)
+                    parts.append((key, re.sub(r'<[^>]*>', '', val)))
+            _normalize_affix_args(name, parts)
+            _apply_alt_display(name, args, parts)
+            affix_parts: list[str] = []
+            bases: list[str] = []
+            for k, val in parts:
+                if val.startswith("-") or val.endswith("-"):
+                    affix_parts.append(val)
+                elif " " not in val:
+                    bases.append(val)
             # Last bare component is the base; earlier bare components are
             # part of the affix (e.g. "que" + "hacer" → affix="que", base="hacer").
             if affix_parts and bases:
@@ -127,22 +206,26 @@ def parse_templates(
 
         # ETY template with :af
         elif name == "ety" and args.get("1") == "es" and args.get("2") == ":af":
-            affix_parts: list[str] = []
-            bases: list[str] = []
+            parts: list[tuple[str, str]] = []
             for key in sorted(args.keys()):
-                if key in ("1", "2", "text", "tree", "nocap", "nocat"):
+                if key in ("1", "2") or not key.isdigit():
                     continue
                 val = args[key]
                 if val and isinstance(val, str):
-                    val = re.sub(r'<[^>]*>', '', val)
-                    if val.startswith("-") or val.endswith("-"):
-                        affix_parts.append(val)
-                    elif ":" in val:
-                        lang_part, word_part = _split_lang_word(val)
-                        if lang_part in (None, "es") and " " not in word_part:
-                            bases.append(word_part)
-                    elif " " not in val:
-                        bases.append(val)
+                    parts.append((key, re.sub(r'<[^>]*>', '', val)))
+            _normalize_affix_args("af", parts)
+            _apply_alt_display("af", args, parts)
+            affix_parts: list[str] = []
+            bases: list[str] = []
+            for k, val in parts:
+                if val.startswith("-") or val.endswith("-"):
+                    affix_parts.append(val)
+                elif ":" in val:
+                    lang_part, word_part = _split_lang_word(val)
+                    if lang_part in (None, "es") and " " not in word_part:
+                        bases.append(word_part)
+                elif " " not in val:
+                    bases.append(val)
             if affix_parts and bases:
                 affix_str = " ".join(affix_parts)
                 internal.append((bases[-1], affix_str))
@@ -153,7 +236,6 @@ def parse_templates(
                 else:
                     internal.append((bases[0], ""))
 
-        # ETYMON ancestors
         elif name in _ETYMON_TEMPLATES or (name == "ety" and args.get("1") == "es"):
             _parse_etymon_template(name, args, etymons)
 
@@ -173,6 +255,36 @@ def parse_templates(
         "doublets": doublets,
         "etymtree_ancestors": etymtree_ancestors,
     }
+
+
+def _apply_alt_display(name: str, args: dict, parts: list[tuple[str, str]]) -> None:
+    """Substitute altN display forms onto affix components, in place.
+
+    wiktextract's altN keys carry the DISPLAYED form of the N-th content
+    component (alt1 = first component, alt2 = second, ...).  The
+    dictionary's rendered etymology uses them — pradera renders
+    "prado + -era" via alt2=era on the suffix page -ero; ilegal renders
+    "i- + legal" via alt1=i- — so labels must too.  Only AFFIX components
+    (hyphenated parts) are substituted: bases resolve by lemma, never by
+    display text.  A missing suffix/prefix slot is filled only for the
+    two-part suffix/suf (alt2) and prefix/pre (alt1) templates.
+    """
+    for alt_key, offset in (("alt1", 0), ("alt2", 1), ("alt3", 2)):
+        alt = args.get(alt_key)
+        if not (isinstance(alt, str) and alt):
+            continue
+        alt = re.sub(r'<[^>]*>', '', alt)
+        if offset < len(parts):
+            k, v = parts[offset]
+            if v.endswith("-"):
+                parts[offset] = (k, alt if alt.endswith("-") else alt + "-")
+            elif v.startswith("-"):
+                parts[offset] = (k, alt if alt.startswith("-") else "-" + alt)
+            # base slot: leave — bases resolve by lemma, not display text
+        elif alt_key == "alt2" and name in ("suffix", "suf"):
+            parts.append(("alt2", alt if alt.startswith("-") else "-" + alt))
+        elif alt_key == "alt1" and name in ("prefix", "pre"):
+            parts.insert(0, ("alt1", alt if alt.endswith("-") else alt + "-"))
 
 
 def _parse_etymon_template(name: str, args: dict, etymons: list):

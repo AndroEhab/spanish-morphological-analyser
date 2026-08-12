@@ -8,7 +8,7 @@ from collections import defaultdict
 from pipeline.normalize import fold, accent_strip
 from pipeline.etymology import parse_templates
 from pipeline.paradigm import compute_allomorphs, strip_one_prefix, build_paradigm_buckets, compute_paradigm_key
-from pipeline.family import FamilyBuilder, _latin_root_keys, _is_usable_ancestor, _is_latin_ancestor
+from pipeline.family import FamilyBuilder, _latin_root_keys, _is_usable_ancestor, _is_latin_ancestor, _allomorphs_for_gates
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -89,8 +89,8 @@ def debug_e3(w1, w2):
                         all_keys.add(rk)
             print(f"  supine keys: {sorted(all_keys)}")
             
-            # Allomorphs
-            allos = compute_allomorphs(rec["word"], rec.get("pos",""), rec.get("forms",[]))
+            # Allomorphs (E4 gated set incl. truncated stem; E3 uses the plain set)
+            allos = _allomorphs_for_gates(rec["word"], rec.get("pos",""), rec.get("forms",[]))
             a3 = sorted([a for a in allos if len(a) >= 3])
             print(f"  allomorphs (len>=3): {a3[:20]}{'...' if len(a3) > 20 else ''}")
     
@@ -116,18 +116,21 @@ def debug_e3(w1, w2):
             if is_hub or over_cap:
                 print(f"    WOULD BE SKIPPED by E3 loop!")
         
-        # Allomorph test
+        # Allomorph test — E3 uses the PLAIN allomorph set; the truncated
+        # stem is only admitted by the E4/E4b (derived/related) gates.
         rec1 = lemma_records[id1]
         rec2 = lemma_records[id2]
         A1 = compute_allomorphs(rec1["word"], rec1.get("pos",""), rec1.get("forms",[]))
         A2 = compute_allomorphs(rec2["word"], rec2.get("pos",""), rec2.get("forms",[]))
+        D1 = _allomorphs_for_gates(rec1["word"], rec1.get("pos",""), rec1.get("forms",[]))
+        D2 = _allomorphs_for_gates(rec2["word"], rec2.get("pos",""), rec2.get("forms",[]))
         
         f1 = accent_strip(rec1["word"]).lower()
         s1 = strip_one_prefix(f1)
         f2 = accent_strip(rec2["word"]).lower()
         s2 = strip_one_prefix(f2)
         
-        print(f"\n=== Allomorph test ===")
+        print(f"\n=== Allomorph test (E3: plain set) ===")
         print(f"  {w1}: folded='{f1}', stripped='{s1}'")
         print(f"  {w2}: folded='{f2}', stripped='{s2}'")
         
@@ -135,7 +138,14 @@ def debug_e3(w1, w2):
         m2 = [a for a in A2 if len(a) >= 3 and s1.startswith(a)]
         print(f"  {w2} starts with allomorph of {w1}: {m1[:5]}")
         print(f"  {w1} starts with allomorph of {w2}: {m2[:5]}")
-        print(f"  Either passes: {bool(m1 or m2)}")
+        print(f"  Either passes (E3): {bool(m1 or m2)}")
+
+        e1 = [a for a in D1 if len(a) >= 3 and s2.startswith(a)]
+        e2 = [a for a in D2 if len(a) >= 3 and s1.startswith(a)]
+        print(f"\n=== Allomorph test (E4: gated set with truncated stems) ===")
+        print(f"  {w2} starts with allomorph of {w1}: {e1[:5]}")
+        print(f"  {w1} starts with allomorph of {w2}: {e2[:5]}")
+        print(f"  Either passes (E4): {bool(e1 or e2)}")
         
         # Check borrowed
         print(f"\n  {w1} in borrowed_lemmas: {id1 in builder.borrowed_lemmas}")

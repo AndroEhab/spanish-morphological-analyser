@@ -30,6 +30,51 @@ exactly one lemma — or one candidate lemma has a stronger POS match — that
 lemma is used as the endpoint.  This repairs derivations whose base is cited
 in an inflected form.
 
+**Template arg normalization:** wiktextract cites the affix of
+`suffix`/`suf`/`prefix`/`pre` templates WITHOUT a hyphen (`casa + ero`,
+`bi + cameral`), unlike `af`/`affix` which hyphenate it.  The parser
+normalizes the bare suffix/prefix arg of those four template names to a
+hyphenated form so it is recognized as an affix instead of a second bare
+component.  Without this, `casero`'s `suffix` template (`casa + ero`) parses
+as a compound with base `ero` and the edge never forms.
+
+**Positional-arg hygiene:** only pure-numeric template args are treated as
+components; named args (`gloss1`, `id2`, `alt1`, `t1`, …) are dropped.
+Before this, `embotellamiento`'s template `{suffix|es|embotellar|gloss1=…|3=miento}`
+parsed with `miento` as a bare second base, which the form table then
+resolved to the lemma `mentir`, producing the garbage edge
+`mentir + embotellar`.
+
+**Identity-based affix recognition:** in affix templates, a bare component
+is recognized as an affix by membership in a closed inventory of Spanish
+derivational suffixes (`-miento, -ción, -sión, -dor, -dora, -ero, -era,
+-ería, -ista, -ismo, -idad, -edad, -anza, -encia, -ancia, -aje, -azo,
+-ada, -ado, -ura, -ble, -ible, -able, -oso, -osa, -illo, -illa, -ito,
+-ita, -ón, -ona, -uelo, -eño, -ense, -ico, -al, -ar, -orio, -ivo, -ante,
+-ente, -mente`) and prefixes (`des-, re-, contra-, anti-, in-, …`), not
+only by position.  Two guards keep bases safe: a bare component is not a
+prefix when the last component is already hyphenated (`auto + -dromo`:
+`auto` is the base), and not a suffix when the first component was
+hyphenated in the source (`anti- + edad`, `re- + bien`: the remaining
+bare word is the base).  With ≥3 components both may fire
+(`en- + red + -ar`, `geo- + centro + -ismo`); with exactly 2 at most one.
+
+**Form-table resolution guards:** when a template base is not a lemma, the
+form table is consulted to repair bases cited in an inflected form
+(`sola → solo`, `manos → mano`).  Four guards contain it:
+- Exact word matches outrank accent-folded ones (`baja` wins over `bajá`,
+  `mano` over `maño`) — template bases are accent-free (`camara → cámara`).
+- A word in the base slot that IS a derivational affix by identity never
+  resolves (`miento` is a suffix, not a base — it must never become
+  `mentir`).
+- Capitalized bases (place/person names) resolve only to a case/plural
+  variant of themselves (`Newton → newton`, `Tortugas → tortuga`), never
+  to a similarly spelled verb (`Aspe → aspar`, `Muño → munir`).
+- With several distinct candidate lemmas, only inflectional variants of
+  the cited base are accepted (`ceda` vs `ceder`/`cerda` resolves to
+  nothing; `seguida → seguido`, `follado → follar`).  A lemma never
+  resolves to itself as parent.
+
 ### E2 — Paradigm Edges
 Verbs sharing the same conjugation residual key are connected if they are derivationally related.
 
@@ -43,6 +88,15 @@ Verbs sharing the same conjugation residual key are connected if they are deriva
 ### E3 — Root-Key Edges
 Words whose Latin ancestors share a computed root key are connected. The Latin root key is `first5` of the ancestor (after stripping Latin prefixes) plus, for verb-shaped ancestors, a supine key `first3 + "T"`.
 
+**Note — truncated stems deliberately REJECTED here:** the E4/E4b gates
+admit truncated citation stems as allomorphs (see below), but E3 does NOT.
+Truncation was measured for E3 and rejected: rescue precision was ~60%
+(computed supine-T keys collide with truncated stems — `beleño ↔
+belenismo` via `belen`, `carecer ↔ careo` via `care`, `barracuda ↔ barro`
+via `barT`), versus ~97% for E4/E4b.  Do not re-add truncated stems to the
+E3 allomorph set.
+
+
 **Additional gates:**
 - Both words must not be in `borrowed_lemmas`.
 - Allomorph overlap: one word's stripped form must start with a ≥3-char allomorph of the other.
@@ -50,6 +104,16 @@ Words whose Latin ancestors share a computed root key are connected. The Latin r
 
 ### E4 — Derived Edges
 Words listed in each other's `derived` field from Wiktionary. Additionally requires shared Latin root keys — the allomorph test alone is not enough, as Wiktionary's "derived" sections mix in antonyms and compounds that bridge unrelated Latin roots.
+
+**Truncated-stem allomorphs:** for the allomorph test, E4 (and E4b) also
+admit the accent-folded citation form minus a final `-a`/`-o`/`-e`, bounded
+by `_MIN_TRUNC_STEM` (4).  Spanish derivation drops the theme vowel
+(`cámara → camar-` in `camarero`), which the plain citation form can never
+match.  The truncated stem is a FILTER on the dictionary's own derived/
+related lists, never a generator.  It is deliberately NOT admitted by E3:
+measured rescue precision there was ~60% (computed supine-T keys collide
+with truncated stems — `beleño ↔ belenismo` via `belen`), versus ~97% for
+E4/E4b.
 
 ### E4b — Related Edges (Substring-Gated)
 Words in each other's `related` field may create an edge ONLY if one word's citation form contains the other as a substring. `mentira` contains `mentir` → edge created. `mente` does not contain `mentir` → excluded. This prevents the `related` field (which lists etymologically adjacent but distinct words) from chaining unrelated families.
