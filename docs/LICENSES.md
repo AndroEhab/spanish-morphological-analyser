@@ -37,8 +37,10 @@ round to one decimal, zero match the real FrequencyWords per-million values
 in the built DB), and its 46 glosses are *abridged/lightly reworded*
 Wiktionary glosses (one verbatim) — so CC BY-SA attribution is due today,
 and nothing NC/ND-licensed attaches to this repository or its build output
-anymore. Finally, this repository has **no LICENSE file**, so its own code
-is all-rights-reserved by default — that is the owner's decision to make.
+anymore. Finally, this repository's own code is licensed **MIT (© 2026
+AndroEhab)** — see `LICENSE` at the repo root — while the embedded
+dictionary content remains **CC BY-SA 4.0** (see `LICENSE-DATA.md` and the
+Repository licensing status section below).
 
 ---
 
@@ -267,8 +269,9 @@ working files:
 **1. Today — publishing this source repository (no data files, no DB):**
 
 - **Code:** no attribution obligations for the pip dependencies (Part A).
-  The repo's own code has **no LICENSE file → all-rights-reserved by
-  default**; adding a licence is the owner's decision (not done here).
+  The repo's own code is licensed **MIT (© 2026 AndroEhab)** — see
+  `LICENSE`; the embedded dictionary content stays **CC BY-SA 4.0** — see
+  `LICENSE-DATA.md`.
 - **Data:** the tracked `app/fixtures/sample.json` carries glosses derived
   from Wiktionary gloss text (abridged/reworded, one verbatim — see Part C),
   so **CC BY-SA attribution is due today**: credit Wiktionary (CC BY-SA 4.0
@@ -341,11 +344,16 @@ content over the web):
 
 ## Repository licensing status
 
-There is **no LICENSE file** in this repository (verified by glob over
-`LICENSE*`, `NOTICE*`, `COPYING*`). Under default copyright law the project
-code is **all-rights-reserved** — anyone cloning the repo has no explicit
-permission to copy, modify, or redistribute the code. Choosing a licence is
-the owner's decision and is deliberately **not** done here.
+The project code is licensed under the **MIT License** (© 2026 AndroEhab) —
+see the `LICENSE` file at the repo root. The **code licence and the content
+licence are separate questions, deliberately stated in two files**: the code
+can be (and is) licensed however the owner chooses, while the linguistic
+content **cannot be relicensed** — it derives from CC BY-SA 4.0 sources and
+remains CC BY-SA 4.0 (and GFDL for the Wiktionary-derived text) with its own
+attribution/share-alike obligations regardless of what the code licence
+says. The content licence and the attribution strings live in
+`LICENSE-DATA.md` at the repo root; the MIT text stays unmodified in
+`LICENSE` so that tooling and GitHub's licence detection can recognise it.
 
 If verbatim or near-verbatim Wiktionary content stays in the repo (the
 fixture's abridged glosses qualify), the **code licence and the content

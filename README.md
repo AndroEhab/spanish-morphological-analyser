@@ -194,3 +194,14 @@ terms, and the obligations per distribution scenario). In short:
   (mechanically verified: no FrequencyWords value appears in the fixture).
 - Anyone rebuilding must obtain both datasets from the sources above under
   their respective terms.
+
+## Licence
+
+- **Code:** MIT, see [`LICENSE`](LICENSE).
+- **Dictionary content and the built database:** CC BY-SA 4.0, see
+  [`LICENSE-DATA.md`](LICENSE-DATA.md).
+
+The two are deliberately separate: the code is freely licensed, while the
+linguistic content derives from CC BY-SA 4.0 sources (Wiktionary,
+FrequencyWords) and cannot be relicensed. Full audit:
+[`docs/LICENSES.md`](docs/LICENSES.md).
