@@ -10,6 +10,7 @@ recon/*
 !recon/DIGEST.md
 !recon/subtlex_head.md
 *.jsonl
+es_full.txt
 *.xlsx
 *.sqlite
 *.db

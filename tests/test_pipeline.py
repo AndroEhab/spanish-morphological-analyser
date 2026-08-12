@@ -18,7 +18,7 @@ from pipeline.paradigm import (
     get_family_forming_buckets,
 )
 from pipeline.etymology import parse_templates, _parse_etymon_chain, _split_lang_word
-from pipeline.frequency import _extract_word, load
+from pipeline.frequency import load
 from pipeline.extract import _classify_entry, _filter_forms, _extract_gloss
 
 
@@ -466,25 +466,41 @@ class TestExtract:
         # This is tested implicitly by the classification logic above.
 
 
-# ============================================================================
-# frequency.py
-# ============================================================================
-
 class TestFrequency:
-    def test_extract_word(self):
-        assert _extract_word("hacer") == "hacer"
-        assert _extract_word("123. hacer") == "hacer"
-        assert _extract_word("  casa  ") == "casa"
-        assert _extract_word("-") is None
-        assert _extract_word("---") is None
-        assert _extract_word(None) is None
-    
-    def test_subtlex_three_blocks(self):
-        """The loader must read all three side-by-side column blocks and
-        find word forms (e.g. abalanzándose), not just lemmas."""
-        xlsx = Path(__file__).resolve().parents[1] / "SUBTLEX-ESP.xlsx"
-        if not xlsx.exists():
-            pytest.skip("SUBTLEX-ESP.xlsx not present")
-        freq = load(xlsx)
-        assert len(freq) > 90000
+    def test_frequencywords_txt(self):
+        """The loader must read the word␣count lines, preserve accents, and
+        normalise to per-million (not raw counts)."""
+        txt = Path(__file__).resolve().parents[1] / "es_full.txt"
+        if not txt.exists():
+            pytest.skip("es_full.txt not present")
+        freq = load(txt)
+        assert len(freq) > 1_000_000
+        assert freq["hacer"] > 0
         assert freq["abalanzándose"] > 0
+        assert freq["qué"] > 0
+        # Per-million normalisation: the raw top count is ~14.5M, so a
+        # per-million value can never approach that scale.
+        assert max(freq.values()) < 100_000.0
+        # Corpus total is the file's own sum: the values sum to 1M.
+        assert abs(sum(freq.values()) - 1_000_000.0) < 1.0
+
+    def test_malformed_lines_and_duplicates(self, tmp_path):
+        """Blank/malformed/negative lines are skipped; duplicate words are
+        summed; values are per-million of the valid total."""
+        txt = tmp_path / "freq.txt"
+        txt.write_text(
+            "casa 100\n"
+            "casa 50\n"
+            "sin-cuenta\n"
+            "solo\n"
+            "raro nope\n"
+            "neg -5\n"
+            "perro 25\n",
+            encoding="utf-8",
+        )
+        freq = load(txt)
+        total = 100 + 50 + 25
+        assert freq == {
+            "casa": 150 / total * 1_000_000.0,
+            "perro": 25 / total * 1_000_000.0,
+        }

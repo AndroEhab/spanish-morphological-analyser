@@ -23,7 +23,7 @@ from pipeline.frequency import load as load_frequency
 
 ROOT = Path(__file__).resolve().parent.parent
 JSONL_PATH = ROOT / "kaikki.org-dictionary-Spanish.jsonl"
-SUBTLEX_PATH = ROOT / "SUBTLEX-ESP.xlsx"
+FREQ_PATH = ROOT / "es_full.txt"
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "morph.sqlite"
 REJECT_PATH = DATA_DIR / "reject_hacer.txt"
@@ -141,9 +141,9 @@ def main():
     # ------------------------------------------------------------------
     # Frequency
     # ------------------------------------------------------------------
-    print(f"[{_ts()}] Loading SUBTLEX frequencies...")
+    print(f"[{_ts()}] Loading FrequencyWords frequencies...")
     t_freq_start = time.time()
-    freq_map = load_frequency(SUBTLEX_PATH)
+    freq_map = load_frequency(FREQ_PATH)
     t_freq = time.time() - t_freq_start
     print(f"[{_ts()}]   {len(freq_map)} distinct words ({t_freq:.1f}s)")
     
@@ -314,8 +314,8 @@ def _write_sqlite(
 
     # ------------------------------------------------------------------
     # Collect all forms: dedup by (form, lemma_id), merge analyses.
-    # Per-form frequency comes from the SUBTLEX word-form list; a form
-    # missing from SUBTLEX gets 0.0. Placeholder surfaces (bare dashes
+    # Per-form frequency comes from the FrequencyWords word-form list; a
+    # form missing from it gets 0.0. Placeholder surfaces (bare dashes
     # or punctuation) are dropped here so they never reach the DB.
     # ------------------------------------------------------------------
     _form_rows: dict[tuple, dict] = {}

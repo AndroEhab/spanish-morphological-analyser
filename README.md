@@ -47,7 +47,9 @@ them and place them at the repo root:
 - `kaikki.org-dictionary-Spanish.jsonl` — the Spanish extraction from
   <https://kaikki.org/dictionary/Spanish/> (wiktextract output of English
   Wiktionary), ~980 MB
-- `SUBTLEX-ESP.xlsx` — SUBTLEX-ESP Spanish subtitle word frequencies, ~3.6 MB
+- `es_full.txt` — the Spanish word-frequency list from
+  <https://github.com/hermitdave/FrequencyWords>
+  (`content/2018/es/es_full.txt`, OpenSubtitles-derived), ~14.5 MB
 
 Running `python -m pipeline.build` then produces `data/morph.sqlite`
 (~300 MB, ~2 minutes). Until that build has been run, the app falls back to
@@ -178,18 +180,17 @@ terms, and the obligations per distribution scenario). In short:
   (since 2023-06-01; previously 3.0) and the **GFDL** — reusers may comply
   with either. kaikki.org states its data is "made available under the same
   licenses as Wiktionary - both CC-BY-SA and GFDL".
-- Frequency data comes from **SUBTLEX-ESP** (Cuetos, Glez-Nosti, Barbón &
-  Brysbaert, 2011), which its authors distribute under a **CC BY-NC-ND 3.0**
-  licence (Attribution-NonCommercial-NoDerivs): non-commercial use only, and
-  no distribution of modified/derived forms. The built `data/morph.sqlite`
-  merges SUBTLEX frequencies with Wiktionary content, so redistributing the
-  database carries both CC BY-SA share-alike and the SUBTLEX NC/ND
-  restrictions — treat this as needing the authors' permission before any
-  distribution.
+- Frequency data comes from **FrequencyWords** (hermitdave/FrequencyWords,
+  OpenSubtitles-derived), licensed **CC BY-SA 4.0** ("MIT License for code.
+  CC-by-sa-4.0 for content." per the repository). Both datasets are CC BY-SA
+  4.0, so the built `data/morph.sqlite` is a single uniformly CC BY-SA 4.0
+  derivative and **is distributable** under CC BY-SA 4.0 with attribution
+  and share-alike. (SUBTLEX-ESP, the frequency source before 2026-08-12,
+  was CC BY-NC-ND 3.0 and blocked distribution — see docs/LICENSES.md.)
 - Neither source dataset is shipped in this repository. The bundled fixture
   `app/fixtures/sample.json` is a small hand-curated sample: its glosses are
   abridged from Wiktionary (CC BY-SA 4.0 applies), while its frequency
-  figures are hand-invented demo values — **not** the SUBTLEX data
-  (mechanically verified: no SUBTLEX value appears in the fixture).
+  figures are hand-invented demo values — **not** the FrequencyWords data
+  (mechanically verified: no FrequencyWords value appears in the fixture).
 - Anyone rebuilding must obtain both datasets from the sources above under
   their respective terms.

@@ -3,10 +3,10 @@
 Usage:
     python scripts/acceptance.py
 
-Runs read-only checks against data/morph.sqlite (plus the SUBTLEX-ESP.xlsx
-word list for the vocabulary-match fraction), prints one readable PASS/FAIL
-report, and exits 0 only if every check passes. Designed to finish well
-under 30 seconds.
+Runs read-only checks against data/morph.sqlite (plus the FrequencyWords
+es_full.txt word list for the vocabulary-match fraction), prints one readable
+PASS/FAIL report, and exits 0 only if every check passes. Designed to finish
+well under 30 seconds.
 
 Sections:
     A  schema and integrity
@@ -43,7 +43,7 @@ if str(ROOT) not in sys.path:
 
 DB_PATH = ROOT / "data" / "morph.sqlite"
 GOLD_PATH = ROOT / "pipeline" / "eval" / "gold_hacer.txt"
-SUBTLEX_PATH = ROOT / "SUBTLEX-ESP.xlsx"
+FREQ_PATH = ROOT / "es_full.txt"
 
 # Indexes the pipeline build is expected to create (besides sqlite_auto*).
 EXPECTED_INDEXES = (
@@ -502,17 +502,21 @@ def section_f(h: Harness, conn: sqlite3.Connection) -> None:
     h.info(f"forms with freq > 0: {n_pos}")
 
     try:
-        from pipeline.frequency import load as load_subtlex
-        subtlex = load_subtlex(SUBTLEX_PATH)
+        from pipeline.frequency import load as load_freq
+        freq_map = load_freq(FREQ_PATH)
     except Exception as exc:  # pragma: no cover
-        h.check("F1 SUBTLEX vocabulary match", False, f"could not load SUBTLEX: {exc}")
-        subtlex = {}
+        h.check("F1 FrequencyWords vocabulary match", False,
+                f"could not load FrequencyWords: {exc}")
     else:
         db_forms = {r[0].lower() for r in conn.execute("SELECT form FROM form")}
-        matched = len(subtlex.keys() & db_forms)
-        frac = matched / len(subtlex) if subtlex else 0.0
-        h.check("F1 SUBTLEX vocabulary matched", True,
-                f"{matched}/{len(subtlex)} = {frac:.1%} of SUBTLEX words appear as forms")
+        # The words a user would actually type: the 2,000 most frequent
+        # entries, mirroring FREQUENCY_IMPACT.md Part 2's method.
+        top = sorted(freq_map.items(), key=lambda kv: kv[1], reverse=True)[:2000]
+        matched = sum(1 for w, _ in top if w in db_forms)
+        frac = matched / len(top) if top else 0.0
+        h.check("F1 FrequencyWords vocabulary match", True,
+                f"{matched}/{len(top)} = {frac:.1%} of the top 2,000 "
+                f"FrequencyWords words appear as forms")
 
     sample = [r["id"] for r in conn.execute("SELECT id FROM lemma ORDER BY RANDOM() LIMIT 200")]
     if sample:

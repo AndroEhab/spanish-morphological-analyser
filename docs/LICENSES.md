@@ -20,19 +20,25 @@ publishing this source repo as it stands — only if a frozen artifact that
 which would require carrying their licence notices. The data is the real
 story: word data derives from English Wiktionary via kaikki.org and is
 dual-licensed **CC BY-SA 4.0 + GFDL** (the README previously claimed 3.0 —
-corrected in this audit); the frequency data is **SUBTLEX-ESP, licensed CC
+corrected in this audit); the frequency data was **SUBTLEX-ESP, licensed CC
 BY-NC-ND 3.0**
 (non-commercial, no-derivatives) — a materially restrictive finding, since
-the pipeline merges SUBTLEX values into the built database. The tracked
+the pipeline merged SUBTLEX values into the built database. **That finding
+was acted on (2026-08-12): SUBTLEX-ESP was replaced with the
+hermitdave/FrequencyWords OpenSubtitles frequency list, licensed CC BY-SA
+4.0** ("MIT License for code. CC-by-sa-4.0 for content." per the
+repository), so the built database is now a single uniformly CC BY-SA 4.0
+derivative and is distributable under that licence (see §2 and Part C —
+the SUBTLEX NC/ND history is preserved as a superseded note). The tracked
 fixture `app/fixtures/sample.json` is the one committed artifact with
-external data, but it is **not** SUBTLEX-exposed: mechanically verified, its
-1,259 frequency values are hand-invented demo numbers (all round to one
-decimal, zero match the real SUBTLEX per-million values in the built DB),
-and its 46 glosses are *abridged/lightly reworded* Wiktionary glosses (one
-verbatim) — so CC BY-SA attribution is due today, but the SUBTLEX NC/ND
-constraint currently applies only to the locally built `data/morph.sqlite`.
-Finally, this repository has **no LICENSE file**, so its own code is
-all-rights-reserved by default — that is the owner's decision to make.
+external data, but it is **not** frequency-source-exposed: mechanically
+verified, its 1,259 frequency values are hand-invented demo numbers (all
+round to one decimal, zero match the real FrequencyWords per-million values
+in the built DB), and its 46 glosses are *abridged/lightly reworded*
+Wiktionary glosses (one verbatim) — so CC BY-SA attribution is due today,
+and nothing NC/ND-licensed attaches to this repository or its build output
+anymore. Finally, this repository has **no LICENSE file**, so its own code
+is all-rights-reserved by default — that is the owner's decision to make.
 
 ---
 
@@ -190,59 +196,58 @@ above). kaikki also requests a citation for academic use: Tatu Ylonen,
 "Wiktextract: Wiktionary as Machine-Readable Structured Data", LREC 2022,
 pp. 1317–1325, <http://www.lrec-conf.org/proceedings/lrec2022/pdf/2022.lrec-1.140.pdf>.
 
-### 2. SUBTLEX-ESP
+### 2. Frequency data
 
-**Canonical distribution page:** the Center for Reading Research (Ghent
-University) page "Subtitle word frequencies for Spanish: SUBTLEX-ESP",
-posted by Marc Brysbaert, June 2011 — `http://crr.ugent.be/archives/679`
-(now 404; the current UGent documents page
-<https://www.ugent.be/pp/experimentele-psychologie/en/research/documents>
-lists SUBTLEXus/SUBTLEX-ch/SUBTLEX-nl but **no SUBTLEX-ESP**). The page,
-which distributes the data file ("You find an excel file with the
-SUBTLEX-ESP here"), carries this notice — **verbatim**, identical in the
-2013-09-27 and 2018-03-25 Wayback snapshots:
+The frequency source was swapped on 2026-08-12. Both halves are documented
+here: the superseded SUBTLEX-ESP record (kept because the history explains
+*why* the swap happened) and the current FrequencyWords source.
+
+#### 2a. SUBTLEX-ESP — **superseded 2026-08-12**
+
+SUBTLEX-ESP (Cuetos, Glez-Nosti, Barbón & Brysbaert, 2011) was the
+frequency source until the 2026-08-12 swap. Its canonical distribution page
+(Center for Reading Research, Ghent University — `http://crr.ugent.be/archives/679`,
+now 404) carried this notice, verbatim and identical in the 2013-09-27 and
+2018-03-25 Wayback snapshots:
 
 > "This work is licensed under a **Creative Commons
 > Attribution-NonCommercial-NoDerivs 3.0 Unported License**."
 
-(with the standard `by-nc-nd/3.0` badge image linking to
-<https://creativecommons.org/licenses/by-nc-nd/3.0/deed.en_US>)
+That is **CC BY-NC-ND 3.0**, and the ND element was the blocker: the
+pipeline merged SUBTLEX per-million values into `data/morph.sqlite`
+(a transformed/derived work), so distributing the DB was a distribution of
+an ND-licensed derivative and the NC element barred commercial use — see
+`docs/FREQUENCY_IMPACT.md` for the full impact study. The repo's
+`SUBTLEX-ESP.xlsx` was proven to be the genuine file (SHA-256
+`6e7b099ca87efa28c16bb1aafd51fc9e383182210f1bca621b7fd9b137657acb`, matching
+the archived CRR distribution). The file still sits untracked at the repo
+root (nothing reads it anymore) and may be deleted at any time.
 
-**Yes — SUBTLEX-ESP is CC BY-NC-ND 3.0.** This is materially important:
+Academic citation (for the record): Cuetos, F., Glez-Nosti, M., Barbón, A.,
+& Brysbaert, M. (2011). SUBTLEX-ESP: Spanish word frequencies based on film
+subtitles. *Psicológica*, 32(2), 133–143.
 
-- **NC (NonCommercial):** use of the dataset is restricted to
-  non-commercial purposes. A commercial product, commercial hosting, or
-  commercial redistribution built on these frequencies would be outside the
-  licence grant.
-- **ND (NoDerivatives):** you may not "alter, transform, or build upon" the
-  work. The pipeline in this repo does exactly that — it reads the xlsx,
-  extracts/aggregates the frequency columns and merges them into
-  `data/morph.sqlite`. Distributing that transformed output (the DB, a
-  release asset, a Docker image) is a distribution of a derivative of an
-  ND-licensed work.
-- Only the **BY (attribution)** element is compatible with this project's
-  current use; the NC and ND elements are restrictions, and they do not
-  evaporate when the numbers are small or the use is non-profit.
+#### 2b. FrequencyWords — current source
 
-**Provenance proof:** the repo's `SUBTLEX-ESP.xlsx` is byte-identical to the
-file distributed from that CRR page — the archived
-`http://crr.ugent.be/papers/SUBTLEX-ESP.zip` (Wayback 2014-06-26) contains
-`SUBTLEX-ESP.xlsx`, SHA-256
-`6e7b099ca87efa28c16bb1aafd51fc9e383182210f1bca621b7fd9b137657acb`, which
-matches the repo file exactly. So the NC-ND notice attaches to the very file
-this project uses.
+**Source:** <https://github.com/hermitdave/FrequencyWords>, Spanish list
+`content/2018/es/es_full.txt` — 14,547,688 bytes, 1,202,520 `word␣count`
+lines, raw OpenSubtitles-derived counts (the repo README points the 2018
+lists at <http://opus.nlpl.eu/OpenSubtitles2018.php>).
 
-**Correct academic citation (copy-pasteable):**
+**Licence, verified from the repository itself** (read 2026-08-12):
 
-> Cuetos, F., Glez-Nosti, M., Barbón, A., & Brysbaert, M. (2011).
-> SUBTLEX-ESP: Spanish word frequencies based on film subtitles.
-> *Psicológica*, 32(2), 133–143.
-> https://recyt.fecyt.es/index.php/psi/article/view/12648
+- The root `LICENSE` file is the MIT License, © 2016 Hermit Dave — it
+  covers the *code* (the list generator).
+- The README's License section states the split explicitly, verbatim:
+  "MIT License for code.<br>CC-by-sa-4.0 for content."
 
-(verified at <https://biblio.ugent.be/publication/2001948> and on the CRR
-page itself). The journal article is open access (*Psicológica* is in DOAJ),
-but the journal's own record marks the article "No license (in copyright)";
-the dataset's terms are the ones above, from its distribution page.
+So the frequency **data** is **CC BY-SA 4.0** per the repository's own
+attribution. The pipeline normalises the raw counts to per-million
+(`count / corpus_total × 1,000,000`, corpus total 423,290,924 tokens),
+which is a transformation fully permitted by CC BY-SA 4.0 (share-alike,
+with attribution). Both datasets feeding the build — Wiktionary content and
+FrequencyWords frequencies — are now CC BY-SA 4.0, so the whole built
+artifact carries a single uniform licence (see Part C).
 
 ---
 
@@ -251,11 +256,11 @@ the dataset's terms are the ones above, from its distribution page.
 Verified against the git tree (`git ls-files`), `.gitignore`, and the
 working files:
 
-- **The two source datasets are NOT in the repository.** `kaikki.org-dictionary-Spanish.jsonl` (979 MB) and `SUBTLEX-ESP.xlsx` (3.6 MB) sit untracked at the repo root; `.gitignore` covers `*.jsonl`, `*.xlsx`, `data/`, `*.sqlite`. Neither appears in `git ls-files`.
+- **The two source datasets are NOT in the repository.** `kaikki.org-dictionary-Spanish.jsonl` (979 MB) and `es_full.txt` (14.5 MB) sit untracked at the repo root; `.gitignore` covers `*.jsonl`, `es_full.txt`, `data/`, `*.sqlite`. (The superseded `SUBTLEX-ESP.xlsx` also sits untracked, now unused.) Neither appears in `git ls-files`.
 - **`data/morph.sqlite` is NOT in the repository.** `data/` is fully gitignored (the 295 MB DB, the ~557 MB of JSONL intermediates, `reject_hacer.txt` are all untracked).
 - **No third-party code is vendored anywhere.** `app/static/` contains exactly three hand-written files (`index.html` 1.5 KB, `app.js` 26.7 KB, `styles.css` 12 KB). Grep for `minified`, `jquery`, `bootstrap`, `react`, `vue`, `angular`, `cdn.`, `unpkg`, `googleapis`, `@import`, `url(` → **zero hits**. No bundled library, no minified vendor file, no webfont, no CDN reference. (The app's only network calls are two same-origin `fetch("/api/...")` calls.) There is no `LICENSE`/`NOTICE`/`COPYING` file anywhere in the tree.
-- **`app/fixtures/sample.json` (261 KB) IS tracked and contains derived Wiktionary glosses — but no SUBTLEX data.** Verified mechanically: (V1) all 1,259 `freq` values are round to one decimal (144 distinct, range 0.1–160.0, heavy repeats, `hacer` = `hizo` = 160.0); cross-checked against `data/morph.sqlite`'s 1.2 M `form.freq` rows for the same surface forms → **0 exact matches**; the 4 nearest (within 0.5) are not roundings of the real per-million values (`mentiría` 6.2 vs 5.94, `miente` 18.6 vs 18.46, `hechas` 8.4 vs 8.56, `probado` 15.0 vs 15.14). The fixture frequencies are hand-invented demo values. (V2) Of its 46 glosses, checked word-by-word against the raw kaikki JSONL: 1 verbatim (`desaprobar` → "to disapprove"), 16 abridged (fixture gloss is a shortened/condensed form of a kaikki gloss, e.g. `mentir` "to lie" ← "to lie (say something untrue)", `hacer` "to do, to make" ← "to do, perform, execute, carry out" + "to make…"), 6 lightly reworded/reordered (`hacedero` "feasible, doable" ← "doable, feasible"), and 23 with no direct match — of which ~11 are the project's own synthetic/fictional entries explicitly marked "(synthetic)"/"(rare)"/"fictional" and the rest are paraphrases of Wiktionary senses (e.g. `desmentir` "to deny" ← "to refute, discredit"). So the fixture is a small hand-curated sample whose real-word glosses are derived from (mostly abbreviated) Wiktionary gloss text; it is the one committed artifact that carries third-party content today.
-- **`data/morph.sqlite` IS a derivative work of both datasets.** `pipeline/build.py` merges, per lemma and per form: Wiktionary content extracted from the kaikki JSONL (word forms, glosses, etymological/derivational relations, paradigms) and SUBTLEX per-million frequencies (`pipeline/frequency.py` reads the xlsx; build.py attaches `freq` to every lemma/form row). It is not currently distributed.
+- **`app/fixtures/sample.json` (261 KB) IS tracked and contains derived Wiktionary glosses — but no FrequencyWords data.** Verified mechanically: (V1) all 1,259 `freq` values are round to one decimal (144 distinct, range 0.1–160.0, heavy repeats, `hacer` = `hizo` = 160.0); cross-checked against `data/morph.sqlite`'s 1.2 M `form.freq` rows for the same surface forms → **0 exact matches** (re-verified 2026-08-12 against the FrequencyWords-built DB; the 2 nearest, `hechizos` 3.5 vs 3.47 and `mentí` 13.6 vs 13.67, are not roundings of the real per-million values). The fixture frequencies are hand-invented demo values. (V2) Of its 46 glosses, checked word-by-word against the raw kaikki JSONL: 1 verbatim (`desaprobar` → "to disapprove"), 16 abridged (fixture gloss is a shortened/condensed form of a kaikki gloss, e.g. `mentir` "to lie" ← "to lie (say something untrue)", `hacer` "to do, to make" ← "to do, perform, execute, carry out" + "to make…"), 6 lightly reworded/reordered (`hacedero` "feasible, doable" ← "doable, feasible"), and 23 with no direct match — of which ~11 are the project's own synthetic/fictional entries explicitly marked "(synthetic)"/"(rare)"/"fictional" and the rest are paraphrases of Wiktionary senses (e.g. `desmentir` "to deny" ← "to refute, discredit"). So the fixture is a small hand-curated sample whose real-word glosses are derived from (mostly abbreviated) Wiktionary gloss text; it is the one committed artifact that carries third-party content today.
+- **`data/morph.sqlite` IS a derivative work of both datasets — both CC BY-SA 4.0.** `pipeline/build.py` merges, per lemma and per form: Wiktionary content extracted from the kaikki JSONL (word forms, glosses, etymological/derivational relations, paradigms) and FrequencyWords per-million frequencies (`pipeline/frequency.py` reads `es_full.txt` and normalises the raw counts; build.py attaches `freq` to every lemma/form row). It is not currently distributed; if it were, a single CC BY-SA 4.0 licence covers the whole artifact (see scenario 2).
 
 ### The three scenarios
 
@@ -268,11 +273,11 @@ working files:
   from Wiktionary gloss text (abridged/reworded, one verbatim — see Part C),
   so **CC BY-SA attribution is due today**: credit Wiktionary (CC BY-SA 4.0
   + GFDL) wherever the fixture data is presented (README + app footer), link
-  the licence, and note modification. **No SUBTLEX exposure today**: the
-  fixture contains zero real SUBTLEX values (verified), and the NC-ND-licensed
-  xlsx is not distributed — the SUBTLEX CC BY-NC-ND constraint currently
-  attaches only to the locally built `data/morph.sqlite` and any future
-  redistribution of it.
+  the licence, and note modification. **No frequency-source exposure
+  today**: the fixture contains zero real FrequencyWords values (verified),
+  and the NC-ND-licensed SUBTLEX xlsx — now unused — is not distributed and
+  no longer feeds the build. Nothing CC BY-NC-ND attaches to this
+  repository or its output anymore.
 - **Concretely:** add a short "Data sources" notice (app footer + README)
   with the two attribution strings below.
 
@@ -285,16 +290,18 @@ Docker image, bundled wheel):
   for the extraction), a link to the licence, and a statement of
   modification. GFDL remains an alternative but is impractical for a
   database.
-- The DB also embeds SUBTLEX-ESP values → **CC BY-NC-ND 3.0 makes this
-  distribution materially problematic**: ND forbids distributing the
-  transformed/merged DB, and NC forbids commercial distribution. **This is
-  the loud finding.** Options: (a) get written permission from the SUBTLEX-ESP
-  authors, (b) strip SUBTLEX-derived frequency values from any distributed
-  artifact (and ship the DB without frequencies, or replace them with an
-  openly licensed frequency source), or (c) distribute only the
-  Wiktionary-derived portion under CC BY-SA.
-- Practical note: this is also why the ~983 MB raw datasets should stay out
-  of any distribution (the xlsx is NC-ND; the kaikki JSONL is CC BY-SA).
+- The DB also embeds FrequencyWords values → **CC BY-SA 4.0, same licence as
+  the Wiktionary content**: the merged DB is released under CC BY-SA 4.0
+  (or later) with attribution to Wiktionary/kaikki.org *and* to
+  FrequencyWords (OpenSubtitles-derived, CC BY-SA 4.0), a link to the
+  licence, and a statement of modification. **No NC/ND blocker remains** —
+  commercial distribution of the DB is now within the licence grant. (This
+  replaces the pre-2026-08-12 finding, where SUBTLEX-ESP's CC BY-NC-ND 3.0
+  made distribution materially problematic.)
+- Practical note: the ~993 MB raw datasets (kaikki JSONL, `es_full.txt`)
+  should still stay out of any distribution — not because of licence
+  restrictions (both are CC BY-SA 4.0) but because they are large and
+  regenerable from their sources.
 
 **3. If the app were hosted publicly** (users query Wiktionary-derived
 content over the web):
@@ -305,13 +312,12 @@ content over the web):
   database remains a CC BY-SA derivative for any further distribution.
   Attribution must be *conspicuous* — an app footer/settings/"About" page
   is the natural place; a README alone is not enough for end users.
-- The SUBTLEX-ESP restrictions follow the *use*, not just distribution:
-  **NC** — if the hosted service is commercial (ads, paid tiers, a
-  commercial product), the use of SUBTLEX-derived frequencies is outside
-  the licence grant; **ND** — the served data is a transformed, merged
-  version of the dataset. Non-commercial, non-derivative presentation of
-  the raw frequency values with attribution is inside the grant; anything
-  beyond that needs the authors' permission.
+- With FrequencyWords the frequency data carries **no NC/ND restrictions**:
+  the served, merged database is a CC BY-SA 4.0 derivative for commercial
+  and non-commercial hosting alike, provided attribution is conspicuous
+  (footer, as above) and share-alike applies to any further distribution.
+  (Pre-2026-08-12, SUBTLEX-ESP's NC element barred commercial use and its
+  ND element barred the transformed/merged presentation — see §2a.)
 
 **Attribution strings (copy-paste ready):**
 
@@ -323,12 +329,13 @@ content over the web):
   [GNU Free Documentation License](https://www.gnu.org/licenses/fdl-1.3.html)
   (dual-licensed; text modified/extracted). Wiktionary: Tatu Ylonen,
   'Wiktextract: Wiktionary as Machine-Readable Structured Data', LREC 2022."
-- SUBTLEX-ESP:
-  "Frequency data from SUBTLEX-ESP — Cuetos, F., Glez-Nosti, M., Barbón, A.,
-  & Brysbaert, M. (2011). SUBTLEX-ESP: Spanish word frequencies based on
-  film subtitles. *Psicológica*, 32(2), 133–143 — used under the
-  [Creative Commons Attribution-NonCommercial-NoDerivs 3.0 Unported
-  License](https://creativecommons.org/licenses/by-nc-nd/3.0/)."
+- FrequencyWords:
+  "Frequency data from the [FrequencyWords](https://github.com/hermitdave/FrequencyWords)
+  Spanish frequency list (`content/2018/es/es_full.txt`,
+  OpenSubtitles-derived, © Hermit Dave and contributors), licensed under the
+  [Creative Commons Attribution-ShareAlike 4.0
+  International](https://creativecommons.org/licenses/by-sa/4.0/) License
+  (per the repository: 'MIT License for code. CC-by-sa-4.0 for content.')."
 
 ---
 

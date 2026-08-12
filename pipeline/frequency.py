@@ -1,65 +1,55 @@
-"""SUBTLEX-ESP frequency loader.
+"""FrequencyWords (OpenSubtitles) frequency loader.
 
-Reads all three column blocks from SUBTLEX-ESP.xlsx.
-Produces word -> per-million float (sum duplicates).
+Reads hermitdave/FrequencyWords `content/2018/es/es_full.txt`
+(https://github.com/hermitdave/FrequencyWords) — one `word<space>count`
+entry per line, lowercase, accents preserved, raw OpenSubtitles-derived
+counts. The frequency data is licensed CC BY-SA 4.0.
+
+Normalises to per-million: freq_pm = count / corpus_total * 1_000_000,
+preserving the exact semantics of `form.freq` ("occurrences per million")
+that the DB and all downstream ranking assume. The corpus total is the sum
+of every valid count line in the file.
+
+Corpus total for the current es_full.txt (as of 2026-08-12):
+423,290,924 tokens over 1,202,520 distinct words (0 malformed lines).
+
+Produces word -> per-million float (duplicate entries summed).
 """
 
 from __future__ import annotations
 
-import re
+import sys
 from pathlib import Path
-from typing import Optional
-
-import openpyxl
 
 
-def _extract_word(val) -> Optional[str]:
-    if val is None:
-        return None
-    s = str(val).strip()
-    if not s or s in ("-", "---"):
-        return None
-    s = re.sub(r"^\d+\.\s*", "", s)
-    s = s.strip()
-    if not s:
-        return None
-    return s
+def load(txt_path: str | Path) -> dict[str, float]:
+    counts: dict[str, int] = {}
+    n_lines = 0
+    skipped = 0
 
-
-def load(xlsx_path: str | Path) -> dict[str, float]:
-    wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-    try:
-        ws = wb["Subtlex-Esp"]
-    except KeyError:
-        available = wb.sheetnames
-        wb.close()
-        raise ValueError(
-            f"Sheet 'Subtlex-Esp' not found. Available sheets: {available}"
-        )
-
-    freq: dict[str, float] = {}
-
-    # Read all data at once using iter_rows for performance.
-    # Columns: A(word), B(raw), C(per-million) | F,G,H | K,L,M
-    rows = list(ws.iter_rows(min_row=1, max_row=ws.max_row, values_only=True))
-
-    for row in rows:
-        for word_col_idx, pm_col_idx in [(0, 2), (5, 7), (10, 12)]:
-            if word_col_idx >= len(row):
+    with open(txt_path, encoding="utf-8") as fh:
+        for line in fh:
+            n_lines += 1
+            parts = line.strip().rsplit(None, 1)
+            if len(parts) != 2 or not parts[0]:
+                skipped += 1
                 continue
-            word_cell = row[word_col_idx]
-            pm_cell = row[pm_col_idx] if pm_col_idx < len(row) else None
-
-            word = _extract_word(word_cell)
-            if word is None:
-                continue
-
+            word, count_str = parts
             try:
-                pm = float(pm_cell) if pm_cell is not None else 0.0
-            except (ValueError, TypeError):
-                pm = 0.0
+                count = int(count_str)
+            except ValueError:
+                skipped += 1
+                continue
+            if count < 0:
+                skipped += 1
+                continue
+            key = word.lower()
+            counts[key] = counts.get(key, 0) + count
 
-            freq[word.lower()] = freq.get(word.lower(), 0.0) + pm
+    total = sum(counts.values())
+    freq = {word: count / total * 1_000_000.0 for word, count in counts.items()}
 
-    wb.close()
+    print(f"frequency: {skipped} malformed line(s) skipped "
+          f"({n_lines} lines, {len(freq)} distinct words, "
+          f"corpus total {total})", file=sys.stderr)
     return freq

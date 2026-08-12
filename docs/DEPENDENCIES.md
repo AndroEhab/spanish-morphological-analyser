@@ -17,7 +17,7 @@ declared in `requirements.txt` (runtime + build) and `requirements-dev.txt`
 | `fastapi` | 0.141.1 | runtime | `app/main.py` (`FastAPI`, `StaticFiles`), `app/api.py` (`APIRouter`, `HTTPException`, `Query`) | Web framework: app object, `/api` routes, static mount. Tests use it too via `fastapi.testclient.TestClient` (`tests/test_api.py`). |
 | `uvicorn` | 0.52.1 | runtime | no project file imports it — launched as `python -m uvicorn app.main:app` | ASGI server. Declared as plain `uvicorn` since the 2026-08-12 split; the `[standard]` extra is unused (see §2). |
 | `orjson` | 3.11.9 | runtime (sqlite backend) + dev | `app/store_sqlite.py:36` (`orjson.loads` on the `form.features` JSON column), `scripts/acceptance.py`, `recon/extract_samples.py` | Fast JSON parsing of the features array — hot path for family views. Runtime dependency of the production backend. |
-| `openpyxl` | 3.1.5 | build only | `pipeline/frequency.py:13` | Reads `SUBTLEX-ESP.xlsx` (three column blocks) during the pipeline build. Never imported by `app/`. |
+| *(removed 2026-08-12)* | | | — | Was the SUBTLEX-ESP xlsx reader (`pipeline/frequency.py:13`), build only. Removed with the FrequencyWords swap — the new loader is stdlib-only, so `openpyxl` is gone from `requirements.txt`. |
 | `pytest` | 9.1.1 | dev only | `tests/test_pipeline.py`, `tests/test_store_sqlite.py` | Test runner. |
 | `httpx` | 0.28.1 | dev only (transitive) | **no project file imports it** | Declared in `requirements-dev.txt` (deliberately — see the comment there) but never imported directly. It is a real requirement of the test suite: `starlette.testclient.TestClient` (which `fastapi.testclient` re-exports) is built on httpx — pytest emits a `StarletteDeprecationWarning` about it. Not needed at runtime. |
 | `playwright` | 1.62.0 | dev only | `scripts/ui_smoke.py:18` | Headless-Chromium UI smoke test. Declared in `requirements-dev.txt` since 2026-08-12; before the split it was the only used-but-undeclared package (reproducibility bug — anyone cloning the repo could not run `scripts/ui_smoke.py`). |
@@ -25,8 +25,9 @@ declared in `requirements.txt` (runtime + build) and `requirements-dev.txt`
 Stdlib-only modules (no third-party imports at all): `pipeline/normalize.py`,
 `pipeline/etymology.py`, `pipeline/extract.py`, `pipeline/family.py`,
 `pipeline/paradigm.py`, `pipeline/tags.py`, `pipeline/subset.py`,
-`pipeline/build.py`, `app/store.py`, `app/store_fixture.py`,
-`tests/conftest.py`, `tests/test_api.py` (apart from fastapi).
+`pipeline/frequency.py`, `pipeline/build.py`, `app/store.py`,
+`app/store_fixture.py`, `tests/conftest.py`, `tests/test_api.py` (apart
+from fastapi).
 
 ### Declared-but-unused
 - `httpx` — in `requirements-dev.txt`, imported by zero project files. Needed
@@ -97,12 +98,13 @@ answers.
 | Dataset | Size on disk | Licence | Needed at runtime? |
 |---|---|---|---|
 | `kaikki.org-dictionary-Spanish.jsonl` (wiktextract extraction of the Spanish section of English Wiktionary, kaikki.org) | 1,026,541,959 B (~979 MB) | CC BY-SA 4.0 and GFDL (kaikki.org: "same licenses as Wiktionary"; Wiktionary dual-licensed CC BY-SA 4.0 + GFDL — see docs/LICENSES.md) | **No** |
-| `SUBTLEX-ESP.xlsx` (Cuetos, Glez-Nosti, Barbón & Brysbaert subtitle word frequencies) | 3,763,108 B (~3.6 MB) | CC BY-NC-ND 3.0 (per the CRR distribution page; non-commercial, no-derivatives — see docs/LICENSES.md) | **No** |
+| `es_full.txt` (hermitdave/FrequencyWords Spanish frequency list, OpenSubtitles-derived) | 14,547,688 B (~14.5 MB) | CC BY-SA 4.0 ("MIT License for code. CC-by-sa-4.0 for content." per the repository — see docs/LICENSES.md §2b) | **No** |
 
 Both are consumed only at build time by `pipeline/build.py`
-(`JSONL_PATH`/`SUBTLEX_PATH` at `pipeline/build.py:25-26`, fed into
+(`JSONL_PATH`/`FREQ_PATH` at `pipeline/build.py:25-26`, fed into
 `pipeline.frequency.load`). `pipeline/subset.py` also reads the kaikki
-JSONL, but only as a dev tool.
+JSONL, but only as a dev tool. (The superseded `SUBTLEX-ESP.xlsx` still sits
+untracked at the repo root but nothing reads it — see docs/LICENSES.md §2a.)
 
 What happens without them:
 
@@ -110,10 +112,10 @@ What happens without them:
   endpoints answer identically (see §5).
 - **Rebuilding the DB: impossible** — `python -m pipeline.build` hard-fails
   without both files.
-- **`scripts/acceptance.py`: check F1 fails** (see §5) — it re-reads the
-  xlsx live for a vocabulary-coverage fraction.
-- **`pytest`: one test skips** gracefully (`pytest.skip("SUBTLEX-ESP.xlsx
-  not present")`, `tests/test_pipeline.py:485-487`).
+- **`scripts/acceptance.py`: check F1 fails** (see §5) — it re-reads
+  `es_full.txt` live for a vocabulary-coverage fraction.
+- **`pytest`: one test skips** gracefully (`pytest.skip("es_full.txt not
+  present")`, `tests/test_pipeline.py`).
 
 ## 5. Empirical independence test (Part B) — actual output
 
@@ -161,15 +163,16 @@ datasets gone.
 35 passed, 2 failed        (exit code 1)
 ```
 
-- **F1 SUBTLEX vocabulary match — FAIL**
-  `could not load SUBTLEX: [Errno 2] No such file or directory:
-  'D:\morphological analyser\SUBTLEX-ESP.xlsx'`
-  — this is the hidden dependency: `scripts/acceptance.py:505-509` imports
-  `pipeline.frequency.load` and re-reads the xlsx live. Baseline (datasets
-  present) is 36 passed / 1 failed per the README; the extra failure is
-  exactly F1. The other failure, C2 "gold recall is complete (malhecho)", is
-  the pre-existing, documented, data-inherent gap — it fails with or without
-  the datasets.
+- **F1 FrequencyWords vocabulary match — FAIL**
+  `could not load FrequencyWords: [Errno 2] No such file or directory:
+  'D:\morphological analyser\es_full.txt'`
+  — this is the hidden dependency: `scripts/acceptance.py:506-508` imports
+  `pipeline.frequency.load` and re-reads `es_full.txt` live. Baseline
+  (datasets present) is 36 passed / 1 failed per the README; the extra
+  failure is exactly F1. The other failure, C2 "gold recall is complete
+  (malhecho)", is the pre-existing, documented, data-inherent gap — it fails
+  with or without the datasets.
+
 - All other sections — schema/integrity (A), ambiguity (B), the hacer family
   (C, apart from C2), non-lemma searchability (D), family sanity (E), F2
   frequency invariants, API round-trip (G) — pass using only
@@ -186,7 +189,7 @@ $ MORPH_BACKEND=sqlite .venv/Scripts/python -m pytest -q
 ```
 
 The single skip is `tests/test_pipeline.py`'s frequency test, which
-explicitly skips when `SUBTLEX-ESP.xlsx` is absent (graceful degradation,
+explicitly skips when `es_full.txt` is absent (graceful degradation,
 not a failure). The 1 warning is starlette's deprecation notice about
 `TestClient` being built on httpx.
 
@@ -291,9 +294,9 @@ Accurate statement of what would have to change (not implemented):
 2. **Ship the data**: either bundle `data/morph.sqlite` (295.4 MB) or keep a
    documented build step; the two raw datasets (~983 MB) stay out of any
    distribution. The DB is derived from CC BY-SA 4.0/GFDL Wiktionary data (see
-   docs/LICENSES.md) and SUBTLEX-ESP (CC BY-NC-ND 3.0), so a redistributed
-   build would carry attribution/SHARE-ALIKE obligations plus the SUBTLEX
-   non-commercial/no-derivatives restrictions.
+   docs/LICENSES.md) and FrequencyWords frequencies (CC BY-SA 4.0), so a
+   redistributed build carries attribution/SHARE-ALIKE obligations — but,
+   since the 2026-08-12 swap, no non-commercial/no-derivatives restrictions.
 3. **Kill the app→pipeline coupling**: `pipeline/normalize.py` is 2 KB of
    pure stdlib; inlining `fold` into `app/` (or moving normalize.py into
    `app/`) would make `app/` self-contained. The pipeline would keep its own
@@ -313,7 +316,8 @@ that map to real user journeys:
 - `requirements.txt` — everything needed to **build the DB and run the app**:
   `fastapi`, `uvicorn` (plain — the `[standard]` extra was dropped; a comment
   in the file explains it only buys `--reload`/watchfiles for development),
-  `orjson`, `openpyxl`.
+  `orjson`. (`openpyxl` was removed 2026-08-12 with the FrequencyWords
+  swap — it existed only to read SUBTLEX-ESP.xlsx.)
 - `requirements-dev.txt` — tests and the UI smoke, on top of
   `requirements.txt`: `pytest`, `httpx`, `playwright`. `httpx` is kept with a
   comment explaining it is required by starlette's `TestClient` even though
