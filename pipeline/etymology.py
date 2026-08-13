@@ -162,8 +162,10 @@ def parse_templates(
     """
     internal: list[tuple[str, str]] = []
     etymons: list[tuple[str, str | None, str, str]] = []  # (norm, lang, mode, src)
+    etymons_raw: list[tuple[str, str | None, str, str, str | None]] = []  # (norm, lang, mode, src_raw, note)
     doublets: list[str] = []
     etymtree_ancestors: list[tuple[str, str | None]] = []  # (norm, lang)
+    etymtree_raw: list[tuple[str, str | None, str, str, str]] = []  # (norm, lang, mode, src_raw, lang_name)
     prose: list[tuple[str, str]] = []  # (parent_word, kind)
 
     templates: list[dict] = []
@@ -258,7 +260,7 @@ def parse_templates(
             name == "ety" and args.get("1") == "es"
             and str(args.get("2", "")) not in (":deverbal", ":clip", ":clipping", ":bf", ":back-formation", ":univ")
         ):
-            _parse_etymon_template(name, args, etymons)
+            _parse_etymon_template(name, args, etymons, etymons_raw)
 
         # DOUBLET
         elif name in ("doublet", "dbt") and args.get("1") == "es":
@@ -334,7 +336,9 @@ def parse_templates(
 
     # Parse etymology_text tree with language detection
     tree_entries = _parse_etym_tree(etym_text)
-    etymtree_ancestors.extend(tree_entries)
+    for norm, lang, mode, raw_word, lang_name in tree_entries:
+        etymtree_ancestors.append((norm, lang))
+        etymtree_raw.append((norm, lang, mode, raw_word, lang_name))
     # NOTE: tree terms are deliberately NOT linked as prose parents.
     # Etymology-tree "Spanish X" lines mix in affixes ("Spanish -eco" for
     # Chiapas + -eco) and component words that collide with unrelated
@@ -360,13 +364,19 @@ def parse_templates(
     return {
         "internal": internal,
         "etymons": etymons,
+        "etymons_raw": etymons_raw,
         "doublets": doublets,
         "etymtree_ancestors": etymtree_ancestors,
+        "etymtree_raw": etymtree_raw,
         "prose": deduped,
     }
 
 
 _PROSE_WORD = r"[^\s.,;+()\[\]<>“”‘’]+"
+
+# Wiktionary marks a cited form with an alt display: "obiectō<alt:obiectāre>"
+# renders as "obiectāre".  The table keeps the display form as the word.
+_ALT_RE = re.compile(r"<alt:([^>]*)>")
 
 
 def _clean_prose_word(w: str) -> str:
@@ -469,7 +479,7 @@ def _apply_alt_display(name: str, args: dict, parts: list[tuple[str, str]]) -> N
             parts.insert(0, ("alt1", alt if alt.endswith("-") else alt + "-"))
 
 
-def _parse_etymon_template(name: str, args: dict, etymons: list):
+def _parse_etymon_template(name: str, args: dict, etymons: list, etymons_raw: list) -> None:
     if name in _INHERITED_MODES:
         mode = "inherited"
     elif name in _BORROWED_MODES:
@@ -509,26 +519,65 @@ def _parse_etymon_template(name: str, args: dict, etymons: list):
         val = args.get(key, "")
         if not val or not isinstance(val, str):
             continue
-        chain = _parse_etymon_chain(val)
-        for lang, w, chain_mode in chain:
+        chain = _parse_etymon_chain_raw(val)
+        got = False
+        for lang, w, chain_mode, raw, alt_norm in chain:
             if " " in w:
                 continue
+            got = True
             # Use template_lang as fallback when chain doesn't provide one.
             effective_lang = lang if lang else template_lang
+            # Re-fold exactly like the legacy parser: the second pass is not
+            # idempotent for some combining sequences (Hebrew niqqud), and
+            # the graph's norm must stay byte-identical.
             normalized = fold_latin(w)
             if normalized:
                 etymons.append((normalized, effective_lang, chain_mode or mode, w))
+            if alt_norm:
+                etymons_raw.append((alt_norm, effective_lang, chain_mode or mode, raw, None))
+        if not got:
+            # The arg is a decomposition statement rather than a single word
+            # ("ad + illīc") — the last component is the etymon, and the
+            # decomposition is recorded as the note.  Such args never feed
+            # the graph (they are dropped by the space check above).
+            cleaned = re.sub(r"<[^>]*>", "", val)
+            if " + " in cleaned:
+                components = [c.strip() for c in cleaned.split("+")]
+                last = (components[-1] or "").lstrip("*").strip()
+                if last and " " not in last and not re.search(r"[<>\[\]]", last):
+                    etymons_raw.append(
+                        (fold_latin(last), template_lang, mode, last,
+                         " + ".join(components))
+                    )
 
 
 def _parse_etymon_chain(raw: str) -> list[tuple[str | None, str, str | None]]:
-    results: list[tuple[str | None, str, str | None]] = []
+    """Parse an etymon chain into (lang, folded_word, mode) triples.
+
+    Compatibility wrapper over the detailed parser: the folded word uses
+    the pre-alt truncation rule (base form before the first '<'), so
+    graph keys computed from ``etymons`` never change.
+    """
+    return [(lang, legacy, mode) for lang, legacy, mode, _raw, _alt in _parse_etymon_chain_raw(raw)]
+
+
+def _parse_etymon_chain_raw(raw: str) -> list[tuple[str | None, str, str | None, str, str]]:
+    """Parse an etymon chain into (lang, legacy_folded, mode, raw_word, alt_folded).
+
+    Same segmentation as ``_parse_etymon_chain`` but additionally keeps the
+    word as written in the source (macrons preserved) and prefers the
+    ``<alt:…>`` display form when the source cites one ("obiectō<alt:
+    obiectāre>" is the etymon "obiectāre").  ``legacy_folded`` is the
+    pre-alt folded word (byte-identical to ``_parse_etymon_chain``); the
+    table's join key ``alt_folded`` is fold_latin(raw_word).
+    """
+    results: list[tuple[str | None, str, str | None, str, str]] = []
     parts = re.split(r"<(?=ety:|inh|bor|der)", raw)
     for part in parts:
         part = re.sub(r"<t:[^>]*>", "", part)
         part = re.sub(r"<pos:[^>]*>", "", part)
         part = re.sub(r"<id:[^>]*>", "", part)
         part = re.sub(r"<lit:[^>]*>", "", part)
-        part = part.replace(">", "")
         if not part.strip():
             continue
         mode = None
@@ -538,15 +587,27 @@ def _parse_etymon_chain(raw: str) -> list[tuple[str | None, str, str | None]]:
             part = part[mode_match.end():]
         lang, word = _split_lang_word(part)
         if word:
-            # Truncate at any residual markup.  wiktextract folds display
-            # forms into the etymon arg ("niger<alt:nigrum>",
-            # "grātia<ref:<span…>>", "voco<") — the base form before the
-            # first '<' is the etymon; the rest is annotation.
-            word = word.split("<")[0].lstrip("*").strip()
-            if not word:
+            # The graph-facing lang is derived exactly as the legacy parser
+            # derived it: all '>' stripped before the colon split (hiero
+            # renderings like "<hiero>Db-b-t:O39</hiero>").  The raw side
+            # keeps the untouched part for <alt:…> detection.
+            legacy_lang, legacy_word = _split_lang_word(part.replace(">", ""))
+            legacy = (legacy_word or word).split("<")[0].lstrip("*").strip()
+            if not legacy:
                 continue
-            word = fold_latin(word)
-            results.append((lang, word, mode))
+            folded = fold_latin(legacy)
+            # Alt display forms ("niger<alt:nigrum>") name the cited form.
+            # Only a clean single-token alt is used as the raw word — alt
+            # content carrying spaces/commas/parens ("stō, stare",
+            # "(nūlla rēs) nāta") is a multi-form gloss, not a word, and
+            # falls back to the base form exactly as the legacy parser did.
+            alt_match = _ALT_RE.search(word)
+            if alt_match:
+                alt_raw = alt_match.group(1).lstrip("*").strip()
+                if alt_raw and not re.search(r"[\s,;()\[\]]", alt_raw):
+                    results.append((legacy_lang, folded, mode, alt_raw, fold_latin(alt_raw)))
+                    continue
+            results.append((legacy_lang, folded, mode, legacy, folded))
     return results
 
 
@@ -558,8 +619,16 @@ def _split_lang_word(raw: str) -> tuple[str | None, str]:
     return None, raw.strip()
 
 
-def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None]]:
-    """Parse etymology tree lines, returning (normalized_word, lang_code, mode)."""
+def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None, str | None, str, str]]:
+    """Parse etymology tree lines into (normalized_word, lang_code, mode, raw_word, lang_name).
+
+    The tree's mode (inherited/borrowed) is detected from the prose line
+    immediately after the tree ("Inherited from Latin X.", "Borrowed from
+    Latin X."); entries before that line are the tree, root-to-leaf, so
+    the last entries are the immediate ancestors.  ``lang_name`` is the
+    source's language name ("Proto-Hellenic", "Old Latin", …) used to
+    label rows whose language has no mapped code.
+    """
     if not etym_text or "Etymology tree" not in etym_text:
         return []
     results = []
@@ -569,6 +638,7 @@ def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None]]:
     lines = etym_text[tree_start:].split("\n")
     in_tree = False
     tree_mode = None  # detect from prose after tree
+    tree_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped == "Etymology tree":
@@ -584,6 +654,8 @@ def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None]]:
             elif "Borrowed" in stripped:
                 tree_mode = "borrowed"
             break
+        tree_lines.append(stripped)
+    for stripped in tree_lines:
         parts = stripped.rsplit(" ", 1)
         if len(parts) >= 2:
             lang_name = parts[0].strip()
@@ -596,7 +668,7 @@ def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None]]:
             lang_code = _detect_tree_lang(lang_name)
             normalized = fold_latin(word_part)
             if normalized:
-                results.append((normalized, lang_code))
+                results.append((normalized, lang_code, tree_mode, word_part, lang_name))
 
     return results
 

@@ -255,6 +255,246 @@ def run_flows(browser):
     shot(page, "08-long-gloss-dropdown.png")
     print("PASS 12: long gloss truncated to one line with ellipsis, row height unchanged")
 
+    # ------------------------------------------------------------------
+    # Family map (Map | List toggle, SVG tree, ancestry ribbon, cousins)
+    # ------------------------------------------------------------------
+
+    # ---- 13. Map | List toggle: switches views, persists across reload
+    type_query(page, "hacer")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=5000)
+    # list is the default view and the map is not even rendered until chosen
+    assert page.locator(".pos-section").count() > 0, "list view must be the default"
+    assert page.locator(".map-wrap").count() == 0, "map must not render in list mode"
+    page.locator(".view-toggle button[data-view='map']").click()
+    assert page.locator(".map-wrap").is_visible()
+    assert page.locator(".pos-section").count() == 0, "list sections must hide in map mode"
+    assert page.evaluate("() => localStorage.getItem('sma.view')") == "map"
+    # the choice persists: reload, re-open the analysis, the map is up
+    page.reload()
+    type_query(page, "hacer")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
+    print("PASS 13: Map|List toggle switches views and persists in localStorage (list default)")
+
+    # tall, wide viewport so the full tree fits the family-map screenshots
+    # at natural (unscaled) size
+    page.set_viewport_size({"width": 1700, "height": 1900})
+
+    # ---- 14. map node count + deep-subtree collapse badges
+    # hacer's tree has 26 nodes; the 3 at depth >= 3 start collapsed behind
+    # +N badges (trees above 25 nodes collapse), so 23 are visible
+    assert page.locator(".map-node").count() == 23, page.locator(".map-node").count()
+    assert page.locator(".map-collapse-badge").count() == 2
+    page.locator(".map-collapse-badge", has_text="+1").click()
+    page.wait_for_timeout(100)
+    assert page.locator(".map-node").count() == 24
+    page.locator(".map-collapse-badge", has_text="+2").click()
+    page.wait_for_timeout(100)
+    assert page.locator(".map-node").count() == 26
+    assert page.locator(".map-collapse-badge").count() == 0
+    # the flagship chains are present once expanded
+    for lemma in ["hacendado", "hechicería", "hechicera"]:
+        assert page.locator(".map-node-lemma", has_text=re.compile("^" + re.escape(lemma) + "$")).count() == 1
+    # root and selected node carry their distinguishing styles
+    assert page.locator(".map-node.is-root .map-node-lemma").text_content() == "hacer"
+    assert page.locator(".map-node.is-selected .map-node-lemma").text_content() == "hacer"
+    page.evaluate("""() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+        document.querySelector('.map-wrap').scrollIntoView({block: 'start'});
+        window.scrollBy(0, -70);
+    }""")
+    page.wait_for_timeout(300)
+    shot(page, "30-map-hacer.png")
+    print("PASS 14: map renders 23/26 hacer nodes with +N collapse badges; expanding shows all 26")
+
+    # ---- 15. hovering highlights the path back to the root
+    hechicero_node = page.locator(".map-node", has=page.locator(".map-node-lemma", has_text=re.compile(r"^hechicero$")))
+    hechicero_node.scroll_into_view_if_needed()
+    hechicero_node.hover()
+    page.wait_for_timeout(250)
+    assert page.locator(".map-node.is-path").count() == 3, page.locator(".map-node.is-path").count()
+    assert page.locator(".map-edge.is-path").count() == 2
+    assert page.locator(".map-node.is-hovered .map-node-lemma").text_content() == "hechicero"
+    path_lemmas = page.locator(".map-node.is-path .map-node-lemma").all_text_contents()
+    assert sorted(path_lemmas) == ["hacer", "hechicero", "hechizo"], path_lemmas
+    shot(page, "31-map-hover-path.png")
+    page.mouse.move(8, 8)  # leave the tree so the highlight clears
+    page.wait_for_timeout(200)
+    assert page.locator(".map-node.is-path").count() == 0
+    print("PASS 15: hovering a node highlights its path to the root (3 nodes, 2 edges)")
+
+    # ---- 16. clicking a node navigates to that word's analysis
+    hechicero_node.click()
+    expect(page.locator(".entry-form")).to_have_text("hechicero", timeout=5000)
+    expect(page.locator(".map-node.is-selected .map-node-lemma")).to_have_text("hechicero", timeout=5000)
+    print("PASS 16: clicking the hechicero node navigates to hechicero's analysis")
+
+    # ---- 17. keyboard: arrows move between nodes, Enter opens
+    page.locator(".map-node.is-selected").click()  # re-clicking the selected node is a no-op but focuses it
+    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
+    assert focused == "hechicero", focused
+    page.keyboard.press("ArrowLeft")
+    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
+    assert focused == "hechizo", focused
+    page.keyboard.press("ArrowLeft")
+    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
+    assert focused == "hacer", focused
+    page.keyboard.press("ArrowDown")
+    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
+    assert focused == "deshacer", focused
+    page.keyboard.press("Enter")
+    expect(page.locator(".entry-form")).to_have_text("deshacer", timeout=5000)
+    print("PASS 17: keyboard navigation — ArrowLeft/ArrowDown move focus, Enter opens the word")
+
+    # ---- 18. ancestry ribbon renders oldest -> newest with mode arrows
+    type_query(page, "satisfacer")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .ancestry-ribbon", state="visible", timeout=5000)
+    words = page.locator(".anc-step .step-word").all_text_contents()
+    assert words == ["facere", "satisfacere", "satisfacer"], words
+    langs = page.locator(".anc-step .step-lang").all_text_contents()
+    assert langs == ["Latin", "Latin", "Spanish"], langs
+    notes = page.locator(".anc-step .step-note").all_text_contents()
+    assert notes == ["(satis- + facere)"], notes
+    # derived = dotted, borrowed = dashed; the legend covers the modes present
+    assert page.locator(".ribbon-chain .anc-arrow.mode-derived").count() == 1
+    assert page.locator(".ribbon-chain .anc-arrow.mode-borrowed").count() == 1
+    assert page.locator(".ribbon-chain .anc-arrow.mode-inherited").count() == 0
+    assert page.locator(".anc-legend .legend-item").count() == 2
+    page.evaluate("""() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+        document.querySelector('.ancestry-ribbon').scrollIntoView({block: 'start'});
+        window.scrollBy(0, -80);
+    }""")
+    page.wait_for_timeout(300)
+    shot(page, "32-ancestry-ribbon.png")
+    print("PASS 18: ancestry ribbon renders facere -> satisfacere -> satisfacer (oldest first) with derived/borrowed arrows")
+
+    # ---- 19. cousins strip renders separately, with working navigation
+    type_query(page, "echar")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .cousins-strip", state="visible", timeout=5000)
+    assert page.locator(".cousins-title").inner_text() == "Also from Latin iactāre"
+    assert "cutoff" in page.locator(".cousins-note").inner_text()
+    assert page.locator(".cousin-word").all_text_contents() == ["proyectar", "objetar"]
+    assert page.locator(".cousin-path").all_text_contents() == [
+        "proiectāre < pro- + iactāre",
+        "obiectāre < ob- + iactāre",
+    ]
+    # visually secondary: a different background from the family map, and a
+    # sibling of the map rather than part of it
+    strip_bg = page.evaluate("() => getComputedStyle(document.querySelector('.cousins-strip')).backgroundColor")
+    map_bg = page.evaluate("() => getComputedStyle(document.querySelector('.map-wrap')).backgroundColor")
+    assert strip_bg != map_bg, (strip_bg, map_bg)
+    assert page.locator(".map-wrap .cousins-strip").count() == 0
+    # clicking a cousin navigates to its own family via entry_id
+    page.locator(".cousin-chip", has_text="proyectar").click()
+    expect(page.locator(".entry-form")).to_have_text("proyectar", timeout=5000)
+    # back to echar to frame the cousins screenshot
+    type_query(page, "echar")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .cousins-strip", state="visible", timeout=5000)
+    page.evaluate("""() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+        document.querySelector('.cousins-strip').scrollIntoView({block: 'start'});
+        window.scrollBy(0, -24);
+    }""")
+    page.wait_for_timeout(300)
+    shot(page, "33-cousins.png")
+    print("PASS 19: cousins strip renders from 'Latin iactāre', visually separate, click navigates")
+
+    # ---- 20. single-node family renders a single node, no ribbon, no cousins
+    type_query(page, "heder")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    expect(page.locator(".entry-form")).to_have_text("heder", timeout=5000)
+    assert page.locator(".map-node").count() == 1
+    assert page.locator(".map-node.is-selected").count() == 1
+    assert page.locator(".map-edge").count() == 0
+    assert page.locator(".map-collapse-badge").count() == 0
+    assert page.locator(".ancestry-ribbon").count() == 0
+    assert page.locator(".cousins-strip").count() == 0
+    print("PASS 20: heder — single-node family renders one node with no ribbon/cousins/badges")
+
+    # ---- 21. largest family (24-node probar star) stays usable
+    type_query(page, "probar")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    expect(page.locator(".entry-form")).to_have_text("probar", timeout=8000)
+    assert page.locator(".map-node").count() == 24
+    assert page.locator(".map-collapse-badge").count() == 0
+    page.evaluate("""() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+        document.querySelector('.map-wrap').scrollIntoView({block: 'start'});
+        window.scrollBy(0, -70);
+    }""")
+    page.wait_for_timeout(300)
+    shot(page, "34-map-large-family.png")
+    print("PASS 21: probar 24-node star map renders fully")
+
+    # ---- 22. mobile (400px): the map scrolls horizontally instead of cramming
+    mobile = browser.new_page(viewport={"width": 400, "height": 800})
+    mobile.goto(BASE + "/", wait_until="networkidle")
+    mobile.evaluate("() => localStorage.setItem('sma.view', 'map')")  # new pages have isolated storage
+    type_query(mobile, "hacer")
+    mobile.wait_for_selector(".option-row", state="visible", timeout=5000)
+    mobile.keyboard.press("Enter")
+    mobile.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
+    scrolls = mobile.evaluate(
+        "() => { const w = document.querySelector('.map-wrap'); return {scrollW: w.scrollWidth, clientW: w.clientWidth}; }"
+    )
+    assert scrolls["scrollW"] > scrolls["clientW"], scrolls
+    shot(mobile, "35-map-mobile.png")
+    mobile.close()
+    print(f"PASS 22: 400px map scrolls horizontally (scrollWidth {scrolls['scrollW']} > {scrolls['clientW']})")
+
+    # ---- 23. dark-mode map
+    dark = browser.new_page(viewport={"width": 1700, "height": 1900}, color_scheme="dark")
+    dark.goto(BASE + "/", wait_until="networkidle")
+    dark.evaluate("() => localStorage.setItem('sma.view', 'map')")
+    type_query(dark, "hacer")
+    dark.wait_for_selector(".option-row", state="visible", timeout=5000)
+    dark.keyboard.press("Enter")
+    dark.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
+    for _ in range(4):  # expand the deep subtrees so the full tree shows
+        badge = dark.locator(".map-collapse-badge").first
+        if not badge.count():
+            break
+        badge.click()
+        dark.wait_for_timeout(80)
+    shot(dark, "36-map-dark.png")
+    dark.close()
+    print("PASS 23: dark-mode map captured")
+
+    # ---- 24. zoom controls: -/+ with a live percentage, Fit, root at the
+    # left on first render
+    type_query(page, "hacer")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
+    assert page.locator(".map-toolbar .zoom-level").inner_text() == "100%"
+    assert page.evaluate(
+        "() => { const w = document.querySelector('.map-wrap'); return w.scrollLeft === 0 && w.scrollTop === 0; }"
+    ), "root must be visible at the top-left on first render"
+    page.locator(".zoom-btn", has_text="+").click()
+    assert page.locator(".map-toolbar .zoom-level").inner_text() == "125%"
+    page.locator(".zoom-btn", has_text="\u2212").click()
+    page.locator(".zoom-btn", has_text="\u2212").click()
+    assert page.locator(".map-toolbar .zoom-level").inner_text() == "75%"
+    page.locator(".zoom-fit").click()
+    level = page.locator(".map-toolbar .zoom-level").inner_text()
+    pct = int(level.rstrip("%"))
+    assert 20 <= pct <= 100, level
+    transform = page.evaluate("() => document.querySelector('.map-svg').style.transform")
+    assert transform.startswith("scale("), transform
+    print(f"PASS 24: zoom controls work (100% -> 125% -> 75% -> Fit {level}); root anchored at the left")
+
 
 def main():
     SHOTS.mkdir(parents=True, exist_ok=True)
@@ -539,9 +779,11 @@ def run_real_flows(browser):
 
     # ---- 7. no-matches state (substring fallback path)
     type_query(page, "zzzz")
-    page.wait_for_timeout(1400)  # substring fallback ~160 ms + debounce + render
+    # wait for the outcome instead of a fixed sleep: the substring fallback
+    # scans the whole dictionary and the machine may be busy from the
+    # previous analysis render
+    expect(page.locator("#search-status")).to_have_text("No matches", timeout=8000)
     assert page.locator("#search-listbox").is_hidden()
-    assert page.locator("#search-status").inner_text() == "No matches"
     assert page.locator(".option-row").count() == 0
     print("PASS 7: zzzz shows clean 'No matches' — no hang, no stale list")
 

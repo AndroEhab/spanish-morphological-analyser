@@ -42,6 +42,28 @@ _DB_PATH = Path(os.environ.get("MORPH_SQLITE_PATH") or _DEFAULT_DB)
 
 _REQUIRED_TABLES = ("form", "lemma", "family", "meta")
 
+# Ancestry / cousins feature: proto-language codes are never join keys.
+_PROTO_LANGS = frozenset({
+    "ine-pro", "itc-pro", "gem-pro", "cel-pro", "grk-pro",
+    "sla-pro", "bat-pro", "ine", "qfa-sub", "sem-pro", "afa-pro",
+})
+_ANCESTRY_CAP = 8          # ancestry entries including the Spanish word itself
+_COUSIN_FANOUT_CAP = 60    # shared etymon with more descendants is too generic
+_COUSIN_NOTE = "Descended from the same ancestor, but outside this word's family under the paradigm cutoff."
+
+
+def _is_proto(lang: str) -> bool:
+    return lang in _PROTO_LANGS or lang.endswith("-pro")
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
+
 # Performance guardrails (documented in the module docstring).
 _SUBSTRING_MIN_LEN = 3
 _SUBSTRING_CAP = 200
@@ -421,6 +443,297 @@ def _member_view(m, head_word: str, head_id: int, forms: list[dict]) -> dict:
     }
 
 
+def _family_tree(
+    conn: sqlite3.Connection,
+    head_id: int,
+    members: list,
+    forms_map: dict[int, list[dict]],
+    selected_lemma_id: int,
+    has_derivation: bool,
+) -> dict:
+    """The family's derivation tree, depth-first, parent before child.
+
+    Parent pointers come from the ``derivation`` table (the BFS tree the
+    pipeline persisted).  A member with no derivation row (root-key /
+    homograph sibling without a derivational parent) attaches to the head
+    with its own relation at depth 1 — never orphaned.
+    """
+    parent_of: dict[int, int] = {}
+    if has_derivation:
+        ids = [m["id"] for m in members]
+        placeholders = ",".join("?" * len(ids))
+        for r in conn.execute(
+            f"SELECT child_id, parent_id FROM derivation WHERE child_id IN ({placeholders})",
+            ids,
+        ):
+            parent_of[r["child_id"]] = r["parent_id"]
+
+    children: dict[int, list[int]] = {}
+    for m in members:
+        if m["id"] == head_id:
+            continue
+        pid = parent_of.get(m["id"], head_id)
+        children.setdefault(pid, []).append(m["id"])
+    by_id = {m["id"]: m for m in members}
+    # Stable sibling order: the family's canonical sort_key (head first,
+    # then relation priority, then word) is stored on each lemma.
+    for pid in children:
+        children[pid].sort(key=lambda lid: (by_id[lid]["sort_key"], lid))
+
+    nodes: list[dict] = []
+    stack = [(head_id, 0)]
+    head_word = by_id[head_id]["word"]
+    while stack:
+        lid, depth = stack.pop()
+        m = by_id[lid]
+        relation = m["relation"] or ("root" if lid == head_id else "")
+        label = (m["relation_label"] or "").strip() or _relation_label_fallback(relation, head_word)
+        if lid == head_id:
+            relation, label = "root", "root"
+        nodes.append({
+            "lemma_id": lid,
+            "lemma": m["word"],
+            "pos": m["pos"],
+            "gloss": m["gloss"] or "",
+            "parent_id": None if lid == head_id else parent_of.get(lid, head_id),
+            "relation": relation,
+            "label": label,
+            "depth": depth,
+            "freq": m["freq"],
+            "form_count": len(forms_map.get(lid, [])),
+            "is_selected": lid == selected_lemma_id,
+        })
+        # depth-first: push children reversed so they pop in sorted order
+        for child in reversed(children.get(lid, ())):
+            stack.append((child, depth + 1))
+    return {
+        "root_lemma_id": head_id,
+        "nodes": nodes,
+    }
+
+
+def _ancestry_for(conn: sqlite3.Connection, lemma_id: int, lemma_word: str, has_etymon: bool) -> list[dict]:
+    """Ancestry chain: the Spanish word itself, then its parsed etymons,
+    most recent first.  At most one proto-language link is shown (PIE roots
+    are noise beyond the first); the whole array is capped at 8 entries."""
+    if not has_etymon:
+        return []
+    rows = conn.execute(
+        "SELECT depth, lang, lang_label, word, mode, note FROM etymon "
+        "WHERE lemma_id = ? ORDER BY depth",
+        (lemma_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    entries: list[dict] = [{
+        "lang": "es",
+        "lang_label": "Spanish",
+        "word": lemma_word,
+        "mode": None,
+        "note": None,
+        "proto": False,
+    }]
+    proto_shown = False
+    for r in rows:
+        lang = r["lang"] or ""
+        is_proto = lang and _is_proto(lang)
+        if is_proto:
+            if proto_shown:
+                continue
+            proto_shown = True
+        entries.append({
+            "lang": lang,
+            "lang_label": r["lang_label"],
+            "word": r["word"],
+            "mode": r["mode"] or None,
+            "note": r["note"],
+            "proto": bool(is_proto),
+        })
+        if len(entries) >= _ANCESTRY_CAP:
+            break
+    return entries
+
+
+def _cousin_fanout(conn: sqlite3.Connection, column: str, value: str) -> int:
+    """Distinct lemmas citing ``value`` in ``column`` (non-proto, known lang)."""
+    placeholders = ",".join("?" * len(_PROTO_LANGS))
+    return conn.execute(
+        f"SELECT COUNT(DISTINCT lemma_id) FROM etymon "
+        f"WHERE {column} = ? AND lang != '' "
+        f"AND lang NOT IN ({placeholders}) AND lang NOT LIKE '%-pro'",
+        (value, *_PROTO_LANGS),
+    ).fetchone()[0]
+
+
+def _cousin_members(
+    conn: sqlite3.Connection,
+    column: str,
+    value: str,
+    family_id: int,
+    exclude_id: int,
+) -> list:
+    """Lemmas sharing the etymon ``value``, outside ``family_id``.
+
+    A lemma that is already a family member is never offered as a cousin —
+    it would make the cousins strip and the family view contradict each
+    other.  The selected lemma itself is always excluded too.
+    """
+    placeholders = ",".join("?" * len(_PROTO_LANGS))
+    return conn.execute(
+        "SELECT DISTINCT l.id, l.word, l.pos, l.gloss, l.freq, l.family_id "
+        "FROM etymon e JOIN lemma l ON l.id = e.lemma_id "
+        f"WHERE e.{column} = ? AND e.lang != '' "
+        f"AND e.lang NOT IN ({placeholders}) AND e.lang NOT LIKE '%-pro' "
+        "AND l.family_id != ? AND l.id != ? "
+        "ORDER BY l.freq DESC, l.word ASC, l.id",
+        (value, *_PROTO_LANGS, family_id, exclude_id),
+    ).fetchall()
+
+
+def _cousin_path(
+    conn: sqlite3.Connection,
+    member_id: int,
+    shared: str,
+    root_word: str,
+    via_root: bool,
+) -> str:
+    """The member's chain down to the shared etymon.
+
+    Exact-norm match: "iacto < iactāre".  Root match: the member's cited
+    form is a prefixed reflex of the shared root, so the path states the
+    decomposition — "obiectāre < ob- + iectāre" — or the plain chain when
+    the member itself cites the root ("iecto < iectāre").
+    """
+    chain = conn.execute(
+        "SELECT depth, lang, word, norm, norm_root FROM etymon "
+        "WHERE lemma_id = ? ORDER BY depth",
+        (member_id,),
+    ).fetchall()
+    if not via_root:
+        for i, c in enumerate(chain):
+            if c["norm"] == shared and (c["lang"] or "") and not _is_proto(c["lang"] or ""):
+                return " < ".join(row["word"] for row in chain[: i + 1])
+        return root_word
+    # root match: prefer the deepest row whose root is the shared one
+    hit = None
+    hit_idx = -1
+    for i, c in enumerate(chain):
+        if (c["norm_root"] or c["norm"]) == shared and (c["lang"] or "") and not _is_proto(c["lang"] or ""):
+            hit, hit_idx = c, i
+    if hit is None:
+        return root_word
+    if hit["norm"] == shared:
+        return " < ".join(row["word"] for row in chain[: hit_idx + 1])
+    prefix = hit["norm"][: len(hit["norm"]) - len(shared)]
+    if prefix:
+        return f"{hit['word']} < {prefix}- + {root_word}"
+    return f"{hit['word']} < {root_word}"
+
+
+def _cousins_for(
+    conn: sqlite3.Connection,
+    lemma_id: int,
+    family_id: int,
+    has_etymon: bool,
+) -> dict | None:
+    """Lemmas sharing this word's deepest usable non-proto etymon.
+
+    Joins on the exact ``norm`` first (strongest signal); when that yields
+    nothing usable, falls back to ``norm_root`` — the norm with at most one
+    Latin prefix stripped, which connects prefixed reflexes (obiectāre,
+    proiectāre, iniectāre, subiectāre, disiectāre → iectāre).  Family
+    members are never cousins, whatever the join.  An etymon with more
+    than ``_COUSIN_FANOUT_CAP`` Spanish descendants is too generic: drop
+    to the next-deepest etymon; if none qualifies (or no other lemma
+    shares it) return None.
+    """
+    if not has_etymon:
+        return None
+    rows = conn.execute(
+        "SELECT depth, lang, lang_label, word, norm, mode, norm_root FROM etymon "
+        "WHERE lemma_id = ? ORDER BY depth DESC",
+        (lemma_id,),
+    ).fetchall()
+    for cand in rows:
+        lang = cand["lang"] or ""
+        if not lang or _is_proto(lang):
+            continue
+        # 1) exact shared etymon — the strongest signal
+        fanout = _cousin_fanout(conn, "norm", cand["norm"])
+        if 1 < fanout <= _COUSIN_FANOUT_CAP:
+            members = _cousin_members(conn, "norm", cand["norm"], family_id, lemma_id)
+            if members:
+                return {
+                    "shared_etymon": {
+                        "lang_label": cand["lang_label"],
+                        "word": cand["word"],
+                        "norm": cand["norm"],
+                    },
+                    "note": _COUSIN_NOTE,
+                    "members": [
+                        _cousin_member(conn, m, cand["norm"], cand["word"], via_root=False)
+                        for m in members
+                    ],
+                }
+        # 2) prefix-stripped root (prefixed reflexes of the same root)
+        root = cand["norm_root"] or cand["norm"]
+        fanout_root = _cousin_fanout(conn, "norm_root", root)
+        if 1 < fanout_root <= _COUSIN_FANOUT_CAP:
+            members = _cousin_members(conn, "norm_root", root, family_id, lemma_id)
+            if members:
+                placeholders = ",".join("?" * len(_PROTO_LANGS))
+                root_row = conn.execute(
+                    f"SELECT word, lang_label FROM etymon WHERE norm = ? AND lang != '' "
+                    f"AND lang NOT IN ({placeholders}) AND lang NOT LIKE '%-pro' "
+                    "ORDER BY lemma_id, depth LIMIT 1",
+                    (root, *_PROTO_LANGS),
+                ).fetchone()
+                root_word = root_row["word"] if root_row else cand["word"]
+                root_label = root_row["lang_label"] if root_row else cand["lang_label"]
+                return {
+                    "shared_etymon": {
+                        "lang_label": root_label,
+                        "word": root_word,
+                        "norm": root,
+                    },
+                    "note": _COUSIN_NOTE,
+                    "members": [
+                        _cousin_member(conn, m, root, root_word, via_root=True)
+                        for m in members
+                    ],
+                }
+    return None
+
+
+def _cousin_member(
+    conn: sqlite3.Connection,
+    m,
+    shared: str,
+    root_word: str,
+    via_root: bool,
+) -> dict:
+    path = _cousin_path(conn, m["id"], shared, root_word, via_root)
+    head_row = conn.execute(
+        "SELECT l.word FROM family f JOIN lemma l ON l.id = f.head_lemma_id "
+        "WHERE f.id = ?",
+        (m["family_id"],),
+    ).fetchone()
+    entry_row = conn.execute(
+        "SELECT id FROM form WHERE lemma_id = ? AND is_lemma = 1 "
+        "ORDER BY id LIMIT 1",
+        (m["id"],),
+    ).fetchone()
+    return {
+        "lemma_id": m["id"],
+        "lemma": m["word"],
+        "pos": m["pos"],
+        "gloss": m["gloss"] or "",
+        "path": path,
+        "family_head": head_row["word"] if head_row else "",
+        "entry_id": str(entry_row["id"]) if entry_row else None,
+    }
+
+
 def analyze(entry_id: str) -> dict | None:
     """Family view for one form entry id; ``None`` -> 404."""
     try:
@@ -466,7 +779,7 @@ def analyze(entry_id: str) -> dict | None:
     }
 
     members = conn.execute(
-        "SELECT id, word, pos, gloss, freq, relation, relation_label FROM lemma "
+        "SELECT id, word, pos, gloss, freq, relation, relation_label, sort_key FROM lemma "
         "WHERE family_id = ?",
         (family_id,),
     ).fetchall()
@@ -489,6 +802,14 @@ def analyze(entry_id: str) -> dict | None:
         for pos in group_order
     ]
 
+    # Ancestry layer: the derivation tree, the ancestor chain, and the
+    # cousins share the selected lemma's deepest usable non-proto etymon.
+    # The etymon/derivation tables may be absent (pre-ancestry database):
+    # the new keys degrade to the documented empty shapes.
+    has_etymon = _has_table(conn, "etymon")
+    has_derivation = _has_table(conn, "derivation")
+    selected_lemma_id = row["lemma_id"]
+
     return {
         "selected": selected,
         "family": {
@@ -500,6 +821,9 @@ def analyze(entry_id: str) -> dict | None:
             "note": fam["note"],
             "groups": groups,
         },
+        "tree": _family_tree(conn, head_id, members_sorted, forms_map, selected_lemma_id, has_derivation),
+        "ancestry": _ancestry_for(conn, selected_lemma_id, selected_row["lemma"], has_etymon),
+        "cousins": _cousins_for(conn, selected_lemma_id, family_id, has_etymon),
     }
 
 

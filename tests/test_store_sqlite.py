@@ -45,10 +45,32 @@ _SCHEMA = [
             size INTEGER NOT NULL DEFAULT 0
         )""",
     "CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)",
+    """CREATE TABLE etymon (
+            id INTEGER PRIMARY KEY,
+            lemma_id INTEGER NOT NULL REFERENCES lemma(id),
+            depth INTEGER NOT NULL,
+            lang TEXT NOT NULL,
+            lang_label TEXT NOT NULL,
+            word TEXT NOT NULL,
+            norm TEXT NOT NULL,
+            norm_root TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            note TEXT
+        )""",
+    """CREATE TABLE derivation (
+            child_id INTEGER NOT NULL REFERENCES lemma(id),
+            parent_id INTEGER NOT NULL REFERENCES lemma(id),
+            relation TEXT NOT NULL,
+            label TEXT NOT NULL,
+            PRIMARY KEY (child_id)
+        )""",
     "CREATE INDEX lemma_family_idx ON lemma(family_id)",
     "CREATE INDEX form_key_freq_idx ON form(key, freq)",
     "CREATE INDEX form_lemma_idx ON form(lemma_id)",
     "CREATE INDEX form_key_idx ON form(key)",
+    "CREATE INDEX etymon_lemma_idx ON etymon(lemma_id)",
+    "CREATE INDEX etymon_norm_idx ON etymon(norm)",
+    "CREATE INDEX etymon_norm_root_idx ON etymon(norm_root)",
 ]
 
 
@@ -113,6 +135,88 @@ def _build_db(path) -> None:
     form(120, "haz", 6, ["singular"], 15.0, is_lemma=1)
     form(121, "haces", 6, ["plural"], 10.0)
     form(122, "hacer popó", 9, ["infinitive"], 500.0, is_lemma=1)
+
+    # Ancestry layer fixtures.  Family 8 reproduces the real-world objetar
+    # story: objetar and desechar sit in echar's family, and the prefixed
+    # reflexes all strip to the root iectāre.
+    lemma(10, "proyectar", "verb", 50.0, 4, "to project")
+    lemma(11, "inyectar", "verb", 20.0, 5, "to inject")
+    lemma(12, "sujetar", "verb", 25.0, 6, "to hold")
+    lemma(13, "objetar", "verb", 30.0, 8, "to object")
+    lemma(14, "echar", "verb", 100.0, 8, "to throw", "root", "root")
+    lemma(15, "desechar", "verb", 40.0, 8, "to discard")
+    lemma(16, "jactar", "verb", 5.0, 9, "to shake")
+    lemma(17, "mental", "adj", 8.0, 10, "mental")
+    lemma(18, "mentar", "adj", 2.0, 11, "mental (variant)")
+    lemma(19, "mente", "noun", 90.0, 12, "mind")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (4, 10, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (5, 11, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (6, 12, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (8, 14, NULL, 3)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (9, 16, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (10, 17, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (11, 18, NULL, 1)")
+    con.execute("INSERT INTO family (id, head_lemma_id, note, size) VALUES (12, 19, NULL, 1)")
+
+    # etymon rows: (lemma_id, depth, lang, lang_label, word, norm, norm_root, mode)
+    con.executemany(
+        "INSERT INTO etymon (lemma_id, depth, lang, lang_label, word, norm, norm_root, mode, note) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        [
+            # mentir: exact shared etymon 'mensa' with mentira/mentiroso
+            (1, 0, "la", "Latin", "mensa", "mensa", "mensa", "derived"),
+            (2, 0, "la", "Latin", "mensa", "mensa", "mensa", "derived"),
+            (3, 0, "la", "Latin", "mensa", "mensa", "mensa", "derived"),
+            # echar: full chain ending at iactāre, plus a proto row to test
+            # the at-most-one-proto rule
+            (14, 0, "la", "Latin", "iecto", "iecto", "iecto", "inherited"),
+            (14, 1, "la", "Latin", "iectāre", "iectare", "iectare", "inherited"),
+            (14, 2, "la", "Latin", "iacto", "iacto", "iacto", "inherited"),
+            (14, 3, "la", "Latin", "iactāre", "iactare", "iactare", "inherited"),
+            (14, 4, "ine-pro", "Proto-Indo-European", "h1yag", "h1yag", "h1yag", "derived"),
+            (14, 5, "ine-pro", "Proto-Indo-European", "h1yagto", "h1yagto", "h1yagto", "derived"),
+            # the prefixed reflexes: all strip to iectare
+            (13, 0, "la", "Latin", "obiectāre", "obiectare", "iectare", "borrowed"),
+            (15, 0, "la", "Latin", "disiectāre", "disiectare", "iectare", "inherited"),
+            (10, 0, "la", "Latin", "prōiectāre", "proiectare", "iectare", "borrowed"),
+            (11, 0, "la", "Latin", "iniectāre", "iniectare", "iectare", "borrowed"),
+            (12, 0, "la", "Latin", "subiectāre", "subiectare", "iectare", "borrowed"),
+            # jactar shares iactāre exactly with echar
+            (16, 0, "la", "Latin", "iactāre", "iactare", "iactare", "borrowed"),
+            # hacer and deshacer both cite facere: the only exact sharer is
+            # deshacer's own family head — no cousins may result
+            (7, 0, "la", "Latin", "facere", "facere", "facere", "inherited"),
+            (8, 0, "la", "Latin", "facere", "facere", "facere", "inherited"),
+            # the mens cluster for the fan-out cap test
+            (17, 0, "la", "Latin", "mens", "mens", "mens", "derived"),
+            (18, 0, "la", "Latin", "mens", "mens", "mens", "derived"),
+            (19, 0, "la", "Latin", "mens", "mens", "mens", "derived"),
+        ],
+    )
+
+    # derivation rows: the BFS parent pointer per non-head member.
+    con.executemany(
+        "INSERT INTO derivation (child_id, parent_id, relation, label) VALUES (?, ?, ?, ?)",
+        [
+            (2, 1, "derived", "related to mentir"),
+            (3, 1, "paradigm", "same paradigm as mentir"),
+            (8, 7, "paradigm", "same paradigm as hacer"),
+            (5, 7, "affix", "haz + -ar"),
+            (6, 7, "inherited", "inherited from Latin root fac"),
+            # family 8: objetar and desechar attach to echar
+            (13, 14, "derived", "related to echar"),
+            (15, 14, "affix", "des- + echar"),
+        ],
+    )
+
+    for lid, word in [(10, "proyectar"), (11, "inyectar"), (12, "sujetar"),
+                      (13, "objetar"), (14, "echar"), (15, "desechar"),
+                      (16, "jactar"), (17, "mental"), (18, "mentar"), (19, "mente")]:
+        con.execute(
+            "INSERT INTO form (id, form, key, lemma_id, features, is_lemma, is_clitic, freq) "
+            "VALUES (?, ?, ?, ?, '[\"citation form\"]', 1, 0, ?)",
+            (200 + lid, word, _fold_key(word), lid, con.execute("SELECT freq FROM lemma WHERE id=?", (lid,)).fetchone()[0]),
+        )
 
     # meta counts deliberately differ from reality (n_forms) to prove that
     # health() reads meta rather than COUNT(*).
@@ -285,3 +389,173 @@ def test_incomplete_schema_fails_cleanly(store, tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_thread", threading.local())
     with pytest.raises(store.StoreError):
         store.health()
+
+
+# ---------------------------------------------------------------------------
+# Ancestry layer: tree, ancestry chain, cousins (etymon/derivation tables)
+# ---------------------------------------------------------------------------
+
+def _analyze_for(store, word: str, pos: str | None = None):
+    rows = store.search(word, 25)
+    row = next(r for r in rows if r["lemma"] == word and (pos is None or r["pos"] == pos))
+    return store.analyze(row["id"]), row
+
+
+def test_analyze_tree_dfs_parent_before_child(store):
+    data, _ = _analyze_for(store, "mentir")
+    nodes = data["tree"]["nodes"]
+    assert data["tree"]["root_lemma_id"] == 1
+    assert [(n["lemma"], n["depth"], n["parent_id"], n["relation"], n["label"]) for n in nodes] == [
+        ("mentir", 0, None, "root", "root"),
+        ("mentira", 1, 1, "derived", "related to mentir"),
+        ("mentiroso", 1, 1, "paradigm", "same paradigm as mentir"),
+    ]
+    assert nodes[0]["pos"] == "verb"
+    assert nodes[0]["is_selected"] is True
+    assert nodes[1]["form_count"] == 2  # mentira + mentiras
+    assert nodes[1]["freq"] == 40.0
+    # a non-head selection marks its own node
+    data2, _ = _analyze_for(store, "mentira")
+    sel = next(n for n in data2["tree"]["nodes"] if n["lemma_id"] == 2)
+    assert sel["is_selected"] is True
+    assert data2["tree"]["nodes"][0]["is_selected"] is False
+
+
+def test_analyze_tree_member_without_derivation_row_attaches_to_head(store):
+    # family 3 (hacer) has no derivation rows for haz/hacer popó: they attach
+    # to the head at depth 1 with their own relation — never orphaned.
+    data, _ = _analyze_for(store, "hacer")
+    nodes = {n["lemma"]: n for n in data["tree"]["nodes"]}
+    assert nodes["hacer"]["depth"] == 0 and nodes["hacer"]["parent_id"] is None
+    for w in ("haz", "deshacer", "hacer popó"):
+        assert nodes[w]["depth"] == 1, w
+        assert nodes[w]["parent_id"] == 7, w
+    order = [n["lemma"] for n in data["tree"]["nodes"]]
+    assert order.index("hacer") < order.index("hacer popó")
+    ids = [n["lemma_id"] for n in data["tree"]["nodes"]]
+    assert len(ids) == len(set(ids))  # every member exactly once (haz appears twice: two lemmas)
+
+
+def test_analyze_ancestry_chain_and_proto_dedup(store):
+    data, _ = _analyze_for(store, "echar")
+    anc = data["ancestry"]
+    assert [a["word"] for a in anc] == [
+        "echar", "iecto", "iectāre", "iacto", "iactāre", "h1yag",
+    ]
+    assert anc[0] == {
+        "lang": "es", "lang_label": "Spanish", "word": "echar",
+        "mode": None, "note": None, "proto": False,
+    }
+    assert anc[1]["lang"] == "la" and anc[1]["mode"] == "inherited"
+    assert anc[4] == {"lang": "la", "lang_label": "Latin", "word": "iactāre",
+                      "mode": "inherited", "note": None, "proto": False}
+    # at most one proto link, and it is marked
+    protos = [a for a in anc if a["proto"]]
+    assert [p["word"] for p in protos] == ["h1yag"]
+    assert protos[0]["lang_label"] == "Proto-Indo-European"
+    assert len(anc) <= 8
+
+
+def test_analyze_cousins_exact_norm_join(store):
+    # echar cites iactāre itself; jactar cites it too — the exact shared
+    # etymon is the strongest signal and wins over the root join.
+    data, _ = _analyze_for(store, "echar")
+    c = data["cousins"]
+    assert c is not None
+    assert c["shared_etymon"] == {"lang_label": "Latin", "word": "iactāre", "norm": "iactare"}
+    assert [m["lemma"] for m in c["members"]] == ["jactar"]
+    m = c["members"][0]
+    assert m["path"] == "iactāre"
+    assert m["family_head"] == "jactar"
+    assert m["pos"] == "verb"
+    assert m["entry_id"] is not None
+
+
+def test_analyze_cousins_norm_root_fallback_excludes_family(store):
+    # objetar cites only obiectāre (fan-out 1): the exact join yields
+    # nothing, so the cousins come from the prefix-stripped root iectāre.
+    # Family members are never cousins: echar (objetar's family head) and
+    # desechar are excluded even though they share the root.
+    data, _ = _analyze_for(store, "objetar")
+    c = data["cousins"]
+    assert c is not None
+    assert c["shared_etymon"] == {"lang_label": "Latin", "word": "iectāre", "norm": "iectare"}
+    lemmas = {m["lemma"]: m for m in c["members"]}
+    assert set(lemmas) == {"proyectar", "inyectar", "sujetar"}
+    assert lemmas["proyectar"]["path"] == "prōiectāre < pro- + iectāre"
+    assert lemmas["inyectar"]["path"] == "iniectāre < in- + iectāre"
+    assert lemmas["sujetar"]["path"] == "subiectāre < sub- + iectāre"
+    # ranked by frequency desc (proyectar 50 > sujetar 25 > inyectar 20)
+    assert [m["lemma"] for m in c["members"]] == ["proyectar", "sujetar", "inyectar"]
+
+
+def test_analyze_cousins_family_head_excluded_from_exact_join(store):
+    # deshacer and hacer both cite facere exactly; the only exact sharer is
+    # deshacer's own family head, so the exact join empties after the
+    # family exclusion and no cousins block is offered.
+    data, _ = _analyze_for(store, "deshacer")
+    assert data["cousins"] is None
+
+
+def test_analyze_cousins_fanout_cap(store, monkeypatch):
+    data, _ = _analyze_for(store, "mental")
+    c = data["cousins"]
+    assert c["shared_etymon"]["norm"] == "mens"
+    assert {m["lemma"] for m in c["members"]} == {"mentar", "mente"}
+    # tighten the cap: mens has 3 descendants, so it becomes too generic and
+    # nothing qualifies -> cousins null
+    monkeypatch.setattr(store, "_COUSIN_FANOUT_CAP", 2)
+    data2, _ = _analyze_for(store, "mental")
+    assert data2["cousins"] is None
+
+
+def test_analyze_no_etymon_rows_empty_shapes(store):
+    # mentar (family 2) has no etymon rows: empty ancestry, null cousins.
+    data, _ = _analyze_for(store, "mentar", "verb")
+    assert data["ancestry"] == []
+    assert data["cousins"] is None
+    # the tree still renders (head-only family)
+    assert data["tree"]["root_lemma_id"] == 4
+    assert data["tree"]["nodes"][0]["lemma"] == "mentar"
+
+
+def test_analyze_without_ancestry_tables_degrades(store, tmp_path, monkeypatch):
+    # a pre-ancestry database (no etymon/derivation tables) keeps working:
+    # the new keys degrade to the documented empty shapes.
+    db = tmp_path / "old.sqlite"
+    con = sqlite3.connect(str(db))
+    con.execute(
+        "CREATE TABLE lemma (id INTEGER PRIMARY KEY, word TEXT NOT NULL, pos TEXT NOT NULL, "
+        "etym_no INTEGER NOT NULL DEFAULT 0, gloss TEXT, head_expansion TEXT, "
+        "freq REAL NOT NULL DEFAULT 0, family_id INTEGER, relation TEXT, "
+        "relation_label TEXT, sort_key INTEGER NOT NULL DEFAULT 0)"
+    )
+    con.execute(
+        "CREATE TABLE form (id INTEGER PRIMARY KEY, form TEXT NOT NULL, key TEXT NOT NULL, "
+        "lemma_id INTEGER NOT NULL REFERENCES lemma(id), features TEXT NOT NULL, "
+        "is_lemma INTEGER NOT NULL DEFAULT 0, is_clitic INTEGER NOT NULL DEFAULT 0, "
+        "freq REAL NOT NULL DEFAULT 0)"
+    )
+    con.execute(
+        "CREATE TABLE family (id INTEGER PRIMARY KEY, head_lemma_id INTEGER NOT NULL "
+        "REFERENCES lemma(id), note TEXT, size INTEGER NOT NULL DEFAULT 0)"
+    )
+    con.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)")
+    con.execute(
+        "INSERT INTO lemma (id, word, pos, gloss, freq, family_id, relation, relation_label, sort_key) "
+        "VALUES (1, 'hacer', 'verb', 'to do', 10.0, 1, 'root', 'root', 0)"
+    )
+    con.execute("INSERT INTO family (id, head_lemma_id, size) VALUES (1, 1, 1)")
+    con.execute(
+        "INSERT INTO form (id, form, key, lemma_id, features, is_lemma, freq) "
+        "VALUES (1, 'hacer', 'hacer', 1, '[\"infinitive\"]', 1, 10.0)"
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(store, "_DB_PATH", db)
+    monkeypatch.setattr(store, "_thread", threading.local())
+    data = store.analyze("1")
+    assert data is not None
+    assert data["ancestry"] == []
+    assert data["cousins"] is None
+    assert data["tree"]["nodes"][0]["lemma"] == "hacer"

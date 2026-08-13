@@ -156,6 +156,19 @@ BFS computes depths for all members. Each non-head member selects the best incom
 
 **Why `malhecho` is out:** Zero etymology data in wiktextract — no templates, no text, no derived/related links. Genuinely unreachable from the source data.
 
+## Etymon & Derivation Tables (the ancestry layer)
+
+The build persists two display-only tables alongside the four core ones; the API's derivation map, ancestry ribbon and cousins strip read them. **They never feed back into family membership, root keys, or any edge type.**
+
+- **`etymon`** — the parsed ancestor chain per lemma: `(lemma_id, depth, lang, lang_label, word, norm, norm_root, mode, note)`. `depth` 0 is the immediate ancestor, increasing back in time. `word` is as written in the source (macrons preserved); `norm` is the accent/macron-stripped lowercase join key. `note` records a decomposition only when the source states one ("ad + illīc" — 4 rows in the whole corpus; it is nearly always NULL). Template etymons (`inh`/`bor`/`der`/`ety`/`etymon`/`root`) come first in parse order, then etymology-tree entries in reverse (root-to-leaf tree order ⇒ the last tree line is the immediate ancestor); rows are deduplicated by `(norm, lang, mode)`. Proto-language rows and reconstructed forms are kept in the table but are **never join keys**.
+- **`derivation`** — the BFS tree the label assignment already computes, persisted instead of thrown away: `(child_id PRIMARY KEY, parent_id, relation, label)`. Exactly one row per non-head family member; none for heads.
+
+**`norm_root` — the prefix-stripped secondary join key.** Most Spanish words cite a *prefixed* Latin reflex rather than the root itself (`objetar < obiectāre`, `proyectar < prōiectāre`, `inyectar < iniectāre`, `sujetar < subiectāre`, `desechar < disiectāre`), so an exact-`norm` join rarely connects them. `norm_root` is `norm` with at most one Latin prefix stripped, using the same closed `_LATIN_PREFIXES` list `_latin_root_keys` uses — `obiectare → iectare`, `proiectare → iectare`, `disiectare → iectare`, and `echar` already carries `iectare`. The cousins API joins on `norm` first (exact shared etymon, strongest signal); when that yields nothing usable it falls back to `norm_root`.
+
+**Fan-out cap.** A shared etymon with more than 60 Spanish descendants is too generic to be a "cousins" signal (`mens` alone has 2,536; 37 norms exceed 60 counting all rows, 6 among non-proto join keys) — the API drops to the next-deepest etymon, and if none qualifies it returns `cousins: null`. The same cap applies to `norm_root`; only 6 stripped roots exceed it.
+
+**⚠️ `norm_root` is display-only.** It is persisted for the cousins lookup and must never be reused as a family-membership key, a root key, or an edge generator. The `hacer` cutoff (learned `yect-`/`jet-` vs inherited `ech-`) is deliberate: `proyectar` showing up as a *cousin* of `objetar` is correct; merging their families would not be. If a future feature wants a "same root" edge, it needs its own gated design — do not shortcut it through `norm_root`.
+
 ## Accepted Data Limitations
 
 - **`conducir`'s family is headed by `producir`.**  The `-ducir` verbs are

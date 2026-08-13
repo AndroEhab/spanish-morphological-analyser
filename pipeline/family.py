@@ -830,7 +830,7 @@ class FamilyBuilder:
                         # Find best Latin ancestor label.
                         common = a_ancs & b_ancs
                         if common:
-                            best = sorted(common, key=lambda x: -len(x))[0]
+                            best = sorted(common, key=lambda x: (-len(x), x))[0]
                             rlabel = f"inherited from Latin {best}"
                         else:
                             rlabel = f"same root as {self.lemmas[lid]['word']}"
@@ -1061,6 +1061,7 @@ class FamilyBuilder:
                     -rec.get("freq", 0),
                     len(rec["word"]),
                     rec["word"],
+                    lid,
                 )
             head_id = min(eligible, key=_head_key)
             head_word = self.lemmas[head_id]["word"]
@@ -1099,6 +1100,7 @@ class FamilyBuilder:
                         _REL_ORDER.get(x[1], 99),
                         x[3],
                         self.lemmas[x[0]]["word"],
+                        x[0],
                     ))
                     parent, rel, rlabel = best[0], best[1], best[2]
                     mw = self.lemmas[mid]["word"]
@@ -1121,7 +1123,7 @@ class FamilyBuilder:
                         own_anc = None
                         own_anc_osp = None
                         comp_words = {self.lemmas[l]["word"] for l in comp}
-                        for anc in sorted(self.lemma_ancestors.get(mid, set()), key=lambda x: -len(x)):
+                        for anc in sorted(self.lemma_ancestors.get(mid, set()), key=lambda x: (-len(x), x)):
                             if len(anc) < 4 or anc in comp_words:
                                 continue
                             lang = self.ancestor_langs.get(mid, {}).get(anc, "")
@@ -1147,9 +1149,9 @@ class FamilyBuilder:
                         label = rlabel
                     else:
                         label = rel
-                    members[mid] = {"relation": rel, "relation_label": label, "_parent": pw}
+                    members[mid] = {"relation": rel, "relation_label": label, "_parent": pw, "_parent_id": parent}
                 else:
-                    members[mid] = {"relation": "root", "relation_label": "root"}
+                    members[mid] = {"relation": "root", "relation_label": "root", "_parent_id": None}
 
             # Assert labels: reject empty, machine codes, and self-referential
             # labels, and guard against the doubled-substring corruption that

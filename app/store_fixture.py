@@ -104,6 +104,126 @@ def _public_row(entry: dict) -> dict:
     }
 
 
+def _coarse_relation(relation: str) -> str:
+    """Map a fixture member relation onto the coarse tree relation kinds."""
+    if relation == "root":
+        return "root"
+    if relation.startswith(("prefix:", "suffix:")) or relation == "participle":
+        return "affix"
+    if relation.startswith("inherited"):
+        return "inherited"
+    if relation.startswith("same paradigm"):
+        return "same paradigm"
+    return relation
+
+
+def _member_freq(member: dict) -> float:
+    """Corpus frequency of the member's citation form (fall back to the
+    most frequent form when no form is flagged as the lemma)."""
+    for form in member["forms"]:
+        if form["is_lemma"]:
+            return form["freq"]
+    return max((form["freq"] for form in member["forms"]), default=0.0)
+
+
+def _relation_label(relation: str, head_lemma: str) -> str:
+    """Human-readable derivation label for a fixture member relation."""
+    if relation == "root":
+        return "root"
+    if relation.startswith("prefix:"):
+        return f"{relation[7:]} + {head_lemma}"
+    if relation.startswith("suffix:"):
+        return f"{head_lemma} + {relation[7:]}"
+    return relation
+
+
+def _tree_view(family: dict, entry: dict) -> dict:
+    """Derivation tree per the frozen API contract.
+
+    Families with an explicit ``tree`` in the fixture use it verbatim,
+    enriched with member data (pos, gloss, freq, form count). Families
+    without one synthesize a star — every non-head member hangs off the
+    head — which is the degenerate shape the UI must handle anyway.
+    """
+    by_key = {(m["lemma"], m["pos"]): m for m in family["members"]}
+    spec = family.get("tree")
+    if spec:
+        nodes_spec = list(spec["nodes"])
+        root_id = spec.get("root_lemma_id")
+    else:
+        head = next(m for m in family["members"] if m["is_head"])
+        ids: dict[tuple[str, str], int] = {}
+
+        def nid(member: dict) -> int:
+            key = (member["lemma"], member["pos"])
+            if key not in ids:
+                ids[key] = len(ids) + 1
+            return ids[key]
+
+        head_id = nid(head)
+        nodes_spec = [
+            {
+                "lemma_id": head_id,
+                "lemma": head["lemma"],
+                "pos": head["pos"],
+                "parent_id": None,
+                "relation": "root",
+                "label": "root",
+            }
+        ]
+        for member in family["members"]:
+            if member["is_head"]:
+                continue
+            nodes_spec.append(
+                {
+                    "lemma_id": nid(member),
+                    "lemma": member["lemma"],
+                    "pos": member["pos"],
+                    "parent_id": head_id,
+                    "relation": _coarse_relation(member["relation"]),
+                    "label": _relation_label(member["relation"], head["lemma"]),
+                }
+            )
+        root_id = head_id
+
+    # Depth is derivable in one pass because tree.nodes is depth-first and
+    # every parent precedes its children (frozen contract).
+    depth_by_id: dict[int, int] = {}
+    for node in nodes_spec:
+        pid = node["parent_id"]
+        depth_by_id[node["lemma_id"]] = 0 if pid is None else depth_by_id.get(pid, 0) + 1
+
+    nodes = []
+    for node in nodes_spec:
+        member = by_key.get((node["lemma"], node.get("pos", "")))
+        nodes.append(
+            {
+                "lemma_id": node["lemma_id"],
+                "lemma": node["lemma"],
+                "pos": (member or node).get("pos", ""),
+                "gloss": (member or node).get("gloss", ""),
+                "parent_id": node["parent_id"],
+                "relation": node["relation"],
+                "label": node["label"],
+                "depth": depth_by_id[node["lemma_id"]],
+                "freq": _member_freq(member) if member else node.get("freq", 0),
+                "form_count": len(member["forms"]) if member else node.get("form_count", 0),
+                "is_selected": bool(member)
+                and member["lemma"] == entry["lemma"]
+                and member["pos"] == entry["pos"],
+            }
+        )
+    return {"root_lemma_id": root_id, "nodes": nodes}
+
+
+def _ancestry_view(family: dict, entry: dict) -> list[dict]:
+    """Etymological chain for the selected entry, oldest step last in the
+    payload (the word itself first), matching the frozen contract example.
+    Per-lemma overrides win over the family default; absent data is []."""
+    by_lemma = family.get("ancestry_by_lemma") or {}
+    return by_lemma.get(entry["lemma"], family.get("ancestry") or [])
+
+
 def _apply_qualifiers(rows: list[dict]) -> list[dict]:
     """Set ``qualifier`` (the row's own lemma) on rows whose surface form maps
     to more than one lemma among the returned candidates."""
@@ -187,21 +307,12 @@ def analyze(entry_id: str) -> dict | None:
     family = entry["family"]
     head = next(m for m in family["members"] if m["is_head"])
 
-    def relation_label(relation: str) -> str:
-        if relation == "root":
-            return "root"
-        if relation.startswith("prefix:"):
-            return f"{relation[7:]} + {head['lemma']}"
-        if relation.startswith("suffix:"):
-            return f"{head['lemma']} + {relation[7:]}"
-        return relation
-
     def member_view(member: dict) -> dict:
         return {
             "lemma": member["lemma"],
             "gloss": member["gloss"],
             "relation": member["relation"],
-            "relation_label": relation_label(member["relation"]),
+            "relation_label": _relation_label(member["relation"], head["lemma"]),
             "is_head": member["is_head"],
             "forms": [
                 {
@@ -243,6 +354,9 @@ def analyze(entry_id: str) -> dict | None:
             "note": family["note"],
             "groups": groups,
         },
+        "tree": _tree_view(family, entry),
+        "ancestry": _ancestry_view(family, entry),
+        "cousins": family.get("cousins"),
     }
 
 

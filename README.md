@@ -34,6 +34,27 @@ sections (Non-finite / Indicative / Subjunctive / Imperative / With clitics).
   `inherited from Latin facticius`, `same paradigm as hacer`, …), and their
   forms render as a dense chip grid bucketed into paradigm sections; long
   lists collapse with "show all" toggles.
+- **Etymology & family map.** Three new layers show *how a word came to be*
+  (built from the `etymon`/`derivation` tables the pipeline persists — the
+  family membership cutoff itself is unchanged):
+  - a **derivation map** of the family — the head at the root, every other
+    member hanging off its derivational parent (`hacer → hacedor`,
+    `hacer → deshacer → deshecho`), hover a node to see the path from the
+    head;
+  - an **ancestry ribbon** — the word's own ancestor chain from the source,
+    macrons preserved (`objetar < Latin obiectāre`, `echar < Late Latin
+    iectāre < Latin iactāre`), capped at 8 links with at most one
+    proto-language row;
+  - a **cousins strip** — other words sharing the deepest usable non-proto
+    etymon but outside the family, reached by exact etymon or by the
+    prefix-stripped root (`objetar` and `proyectar` both strip to
+    `iectāre`), capped at 60 descendants per shared etymon. Family members
+    are never offered as cousins.
+  See `scripts/screenshots/30-map-hacer.png` (map), `32-ancestry-ribbon.png`
+  (ribbon) and `33-cousins.png` (cousins) for the real-data rendering.
+  Coverage is data-bound: about a third of lemmas have any parsed ancestry
+  at all, so roughly two thirds of words show no ribbon and no cousins
+  strip — that is the source's coverage, not a bug.
 - **Backends.** The store is a thin dispatcher (`app/store.py`) with two
   implementations exposing the same contract: a hand-authored JSON fixture
   (`app/store_fixture.py`) and the real SQLite store (`app/store_sqlite.py`),

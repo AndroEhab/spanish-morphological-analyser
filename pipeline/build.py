@@ -6,6 +6,7 @@ Usage: python -m pipeline.build
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from pipeline.tags import humanize, feature_sort_key
 from pipeline.extract import extract as extract_pass1
 from pipeline.etymology import parse_templates
 from pipeline.paradigm import compute_paradigm_key, get_family_forming_buckets, compute_allomorphs, strip_one_prefix
-from pipeline.family import FamilyBuilder
+from pipeline.family import FamilyBuilder, _LATIN_PREFIXES
 from pipeline.frequency import load as load_frequency
 
 
@@ -27,6 +28,153 @@ FREQ_PATH = ROOT / "es_full.txt"
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "morph.sqlite"
 REJECT_PATH = DATA_DIR / "reject_hacer.txt"
+
+# --------------------------------------------------------------------------
+# Etymon table support: language labels and ancestry-row building.
+# --------------------------------------------------------------------------
+
+# Language code -> human label for the etymon table / API.
+_LANG_LABELS = {
+    "la": "Latin", "la-lat": "Late Latin", "la-vul": "Vulgar Latin",
+    "la-med": "Medieval Latin", "la-eme": "Early Medieval Latin",
+    "la-ecc": "Ecclesiastical Latin", "la-new": "New Latin",
+    "osp": "Old Spanish", "es": "Spanish", "fro": "Old French",
+    "frm": "Middle French", "fr": "French", "it": "Italian",
+    "pt": "Portuguese", "ca": "Catalan", "oc": "Occitan", "ro": "Romanian",
+    "ine-pro": "Proto-Indo-European", "itc-pro": "Proto-Italic",
+    "gem-pro": "Proto-Germanic", "cel-pro": "Proto-Celtic",
+    "grk-pro": "Proto-Greek", "sla-pro": "Proto-Slavic",
+    "bat-pro": "Proto-Baltic", "sem-pro": "Proto-Semitic",
+    "afa-pro": "Proto-Afroasiatic", "ine": "Indo-European",
+    "qfa-sub": "Substratum",
+    "ar": "Arabic", "xaa": "Andalusian Arabic", "got": "Gothic",
+    "grc": "Ancient Greek", "nah": "Nahuatl", "nci": "Classical Nahuatl",
+    "qu": "Quechua", "eu": "Basque", "en": "English", "de": "German",
+    "nl": "Dutch", "sa": "Sanskrit", "ja": "Japanese", "he": "Hebrew",
+    "frk": "Frankish", "pro": "Old Occitan", "tnq": "Taíno",
+    "arn": "Mapudungun", "ota": "Ottoman Turkish", "mis": "Unclassified",
+}
+
+# Etymology-tree language NAMES without a mapped code (kept as labels only;
+# the tree parser's code map is unchanged so family membership is not).
+_LANG_NAME_LABELS = {
+    "proto-hellenic": "Proto-Hellenic", "old latin": "Old Latin",
+    "proto-west germanic": "Proto-West Germanic", "middle english": "Middle English",
+    "old english": "Old English", "classical latin": "Classical Latin",
+    "proto-graeco-phrygian": "Proto-Graeco-Phrygian", "frankish": "Frankish",
+    "proto-indo-iranian": "Proto-Indo-Iranian", "gaulish": "Gaulish",
+    "tagalog": "Tagalog", "old catalan": "Old Catalan",
+    "old occitan": "Old Occitan", "classical nahuatl": "Classical Nahuatl",
+    "basque": "Basque", "proto-dravidian": "Proto-Dravidian",
+    "old high german": "Old High German", "proto-austronesian": "Proto-Austronesian",
+    "proto-iranian": "Proto-Iranian", "egyptian": "Egyptian",
+    "proto-malayo-polynesian": "Proto-Malayo-Polynesian",
+    "old galician-portuguese": "Old Galician-Portuguese",
+    "middle dutch": "Middle Dutch", "middle high german": "Middle High German",
+    "old dutch": "Old Dutch", "proto-slavic": "Proto-Slavic",
+    "anglo-norman": "Anglo-Norman", "taíno": "Taíno", "old norse": "Old Norse",
+    "proto-philippine": "Proto-Philippine", "andalusian": "Andalusian",
+    "akkadian": "Akkadian", "old french": "Old French",
+    "vulgar latin": "Vulgar Latin", "medieval latin": "Medieval Latin",
+    "proto-italic": "Proto-Italic", "proto-indo-european": "Proto-Indo-European",
+    "proto-germanic": "Proto-Germanic", "proto-greek": "Proto-Greek",
+    "old spanish": "Old Spanish", "ancient greek": "Ancient Greek",
+}
+
+# Languages excluded from the cousins join (proto reconstructions and
+# template-name artifacts); mirrors family._BANNED_LANGS plus the junk codes.
+_PROTO_LANGS = frozenset({
+    "ine-pro", "itc-pro", "gem-pro", "cel-pro", "grk-pro",
+    "sla-pro", "bat-pro", "ine", "qfa-sub", "sem-pro", "afa-pro",
+})
+_JUNK_LANGS = frozenset({"ety", "yesno", "glossary", "lit", "wp", "unc"})
+
+_TABLE_JUNK_RE = re.compile(r"[()<>,.?;]")
+
+
+def _lang_is_proto(lang: str) -> bool:
+    return lang in _PROTO_LANGS or lang.endswith("-pro")
+
+
+def _strip_latin_prefix(word: str) -> str:
+    """Strip at most one Latin prefix using the same closed prefix list the
+    family builder's root keys use.  Display-only (cousins join key): the
+    result never influences family membership or root keys."""
+    w = word.lower()
+    for pfx in _LATIN_PREFIXES:
+        if w.startswith(pfx) and len(w) > len(pfx) + 2:
+            return w[len(pfx):]
+    return w
+
+
+def _lang_label(lang: str, lang_name: str | None) -> str:
+    if lang and lang in _LANG_LABELS:
+        return _LANG_LABELS[lang]
+    if lang_name:
+        return _LANG_NAME_LABELS.get(lang_name.strip().lower(), "")
+    return ""
+
+
+def _table_usable(word: str) -> bool:
+    """Filter for etymon-table rows: real words, no morpheme/annotation junk.
+
+    Proto reconstructions are kept (the API drops them); bare morphemes
+    ("-tos"), annotation artifacts ("h₂elisder.?"), and markup are not.
+    """
+    if not word or len(word) < 2:
+        return False
+    if word.startswith("*") or word.startswith("-") or word.endswith("-"):
+        return False
+    if " " in word or _TABLE_JUNK_RE.search(word):
+        return False
+    return True
+
+
+def _etymon_rows_for(rec: dict, parsed: dict) -> list[dict]:
+    """Ordered ancestry rows (depth 0 = immediate ancestor) for one lemma.
+
+    Template etymons first (parse order, most recent ancestor first), then
+    etymology-tree entries in reverse (root-to-leaf tree order -> the last
+    tree line is the immediate ancestor).  Rows are deduplicated by
+    (norm, lang, mode) keeping the first occurrence.
+    """
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    word = rec["word"]
+    for norm, lang, mode, raw, note in parsed.get("etymons_raw", []):
+        lang = lang or ""
+        if not _table_usable(norm) or lang in _JUNK_LANGS:
+            continue
+        key = (norm, lang, mode or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "norm": norm, "lang": lang, "mode": mode or "",
+            "word": raw, "note": note, "label": _lang_label(lang, None),
+            "norm_root": _strip_latin_prefix(norm),
+        })
+    for norm, lang, mode, raw, lang_name in reversed(parsed.get("etymtree_raw", [])):
+        lang = lang or ""
+        if not _table_usable(norm) or lang in _JUNK_LANGS:
+            continue
+        # The tree's own "Spanish <word>" line is the lemma itself; the
+        # norm is accent-folded so the comparison must fold the lemma too
+        # ("Spanish seducción" normalizes to 'seduccion').
+        if norm == fold(word) and lang == "es":
+            continue
+        key = (norm, lang, mode or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "norm": norm, "lang": lang, "mode": mode or "",
+            "word": raw, "note": None, "label": _lang_label(lang, lang_name),
+            "norm_root": _strip_latin_prefix(norm),
+        })
+    for i, row in enumerate(rows):
+        row["depth"] = i
+    return rows
 
 
 def _is_placeholder_form(surface: str) -> bool:
@@ -98,6 +246,7 @@ def main():
     doublet_edges: list[dict] = []
     etymtree_edges: list[dict] = []
     prose_edges: list[dict] = []
+    ancestry_rows: dict[int, list[dict]] = {}
 
     
     for lid, rec in lemma_records.items():
@@ -106,6 +255,10 @@ def main():
         etym_text = rec.get("etymology_text", "")
         
         parsed = parse_templates(word, etym_templates, etym_text)
+
+        rows = _etymon_rows_for(rec, parsed)
+        if rows:
+            ancestry_rows[lid] = rows
         
         for parent_word, affix in parsed["internal"]:
             internal_edges.append({
@@ -147,7 +300,6 @@ def main():
     print(f"[{_ts()}]   {len(internal_edges)} internal, {len(etymon_edges)} etymon, "
           f"{len(doublet_edges)} doublet, {len(etymtree_edges)} etymtree edges "
           f"({t_etym:.1f}s)")
-    
     # ------------------------------------------------------------------
     # Frequency
     # ------------------------------------------------------------------
@@ -255,6 +407,7 @@ def main():
         lemma_records, lemma_forms_raw,
         builder, families, freq_map,
         paradigm_prefix, paradigm_key,
+        ancestry_rows,
     )
     t_sqlite = time.time() - t5
 
@@ -266,6 +419,7 @@ def _write_sqlite(
     freq_map: dict[str, float],
     paradigm_prefix: dict[int, str],
     paradigm_key: dict[int, tuple],
+    ancestry_rows: dict[int, list[dict]],
 ):
     """Write the final SQLite database."""
     
@@ -315,6 +469,28 @@ def _write_sqlite(
         CREATE INDEX lemma_family_idx ON lemma(family_id);
         CREATE INDEX form_key_freq_idx ON form(key, freq DESC);
         CREATE INDEX form_key_freq_form_idx ON form(key, freq DESC, form);
+        CREATE TABLE etymon (
+            id INTEGER PRIMARY KEY,
+            lemma_id INTEGER NOT NULL REFERENCES lemma(id),
+            depth INTEGER NOT NULL,          -- 0 = the immediate ancestor, increasing back in time
+            lang TEXT NOT NULL,              -- 'la', 'osp', 'ine-pro', 'ar', ... ('' when unmapped)
+            lang_label TEXT NOT NULL,        -- 'Latin', 'Old Spanish', 'Proto-Indo-European', 'Arabic'
+            word TEXT NOT NULL,              -- as written in the source, macrons preserved
+            norm TEXT NOT NULL,              -- accent/macron-stripped, lowercased — the join key
+            norm_root TEXT NOT NULL,         -- norm with at most one Latin prefix stripped — cousins fallback join key
+            mode TEXT NOT NULL,              -- inherited | borrowed | derived | root | ''
+            note TEXT                        -- e.g. 'ob- + iactāre' when the source states the decomposition
+        );
+        CREATE INDEX etymon_lemma_idx ON etymon(lemma_id);
+        CREATE INDEX etymon_norm_idx ON etymon(norm);
+        CREATE INDEX etymon_norm_root_idx ON etymon(norm_root);
+        CREATE TABLE derivation (          -- the derivation tree inside a family
+            child_id  INTEGER NOT NULL REFERENCES lemma(id),
+            parent_id INTEGER NOT NULL REFERENCES lemma(id),
+            relation  TEXT NOT NULL,         -- affix | paradigm | prose | root-key | derived | homograph
+            label     TEXT NOT NULL,         -- the existing human label, e.g. 'hacer + -dor'
+            PRIMARY KEY (child_id)
+        );
     """)
 
     # Build family_id -> members
@@ -322,6 +498,19 @@ def _write_sqlite(
     for fid, fam in families.items():
         for mid in fam["members"]:
             family_members[fid].append(mid)
+
+    # Etymon rows: the parsed ancestor chain per lemma, depth 0 = immediate.
+    n_etymon = 0
+    for lid, rows in ancestry_rows.items():
+        for row in rows:
+            conn.execute(
+                "INSERT INTO etymon (lemma_id, depth, lang, lang_label, word, norm, norm_root, mode, note) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (lid, row["depth"], row["lang"], row["label"], row["word"],
+                 row["norm"], row["norm_root"], row["mode"], row["note"]),
+            )
+            n_etymon += 1
+    print(f"[{_ts()}]   {n_etymon} etymon rows for {len(ancestry_rows)} lemmas")
 
     # ------------------------------------------------------------------
     # Collect all forms: dedup by (form, lemma_id), merge analyses.
@@ -474,6 +663,30 @@ def _write_sqlite(
             (fid, head_id, size),
         )
         n_families += 1
+
+    # Derivation rows: the BFS parent pointer for every non-head member.
+    n_derivation = 0
+    n_orphaned_members = 0
+    for fid, fam in families.items():
+        head_id = fam["head_id"]
+        for mid, info in fam["members"].items():
+            if mid == head_id:
+                continue
+            parent_id = info.get("_parent_id")
+            if parent_id is None:
+                # No derivational parent (root-key/homograph sibling): the
+                # tree view attaches it to the head with its own relation.
+                n_orphaned_members += 1
+                continue
+            conn.execute(
+                "INSERT INTO derivation (child_id, parent_id, relation, label) "
+                "VALUES (?, ?, ?, ?)",
+                (mid, parent_id, info.get("relation", ""),
+                 info.get("relation_label", "")),
+            )
+            n_derivation += 1
+    print(f"[{_ts()}]   {n_derivation} derivation rows "
+          f"({n_orphaned_members} members without a derivational parent)")
 
     n_forms = 0
     for (f_text, lid), info in sorted(_form_rows.items()):

@@ -489,6 +489,352 @@ body {
 
 .show-all:hover { border-color: var(--accent); background: var(--accent-soft); }
 
+/* ---------- Map | List view toggle ---------- */
+.view-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.view-btn {
+  padding: 5px 18px;
+  font: inherit;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+
+.view-btn:hover { color: var(--text); }
+
+.view-btn.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+}
+
+/* ---------- ancestry ribbon ---------- */
+.ancestry-ribbon {
+  align-self: flex-start;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 20px 12px;
+}
+
+.ribbon-title {
+  margin: 0 0 8px;
+  font-size: .7rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ribbon-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+
+.anc-step {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+}
+
+.step-lang {
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.step-word { font-weight: 700; font-size: 1.02rem; }
+
+.step-note { font-size: .82rem; color: var(--text-muted); }
+
+.anc-arrow { flex: none; margin-inline: 3px 1px; }
+
+.anc-arrow line {
+  stroke: color-mix(in srgb, var(--text-muted) 75%, var(--text));
+  stroke-width: 2;
+}
+
+.anc-arrow polygon { fill: color-mix(in srgb, var(--text-muted) 75%, var(--text)); }
+
+/* borrowed = long dashes, derived = dots: the two patterns must stay
+   clearly distinct so the legend actually teaches the difference */
+.anc-arrow.mode-borrowed line { stroke-dasharray: 9 5; }
+
+.anc-arrow.mode-derived line { stroke-dasharray: 1 6; stroke-linecap: round; }
+
+.anc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .74rem;
+  color: var(--text-muted);
+}
+
+.anc-legend .anc-arrow { width: 32px; height: 9px; margin-inline: 0; }
+
+/* ---------- family map ---------- */
+.map-wrap {
+  /* the tree needs more room than the 900px reading column: keep the left
+     edge aligned with the page column and extend right towards the viewport
+     edge (capped). The SVG always renders at natural size — node text is
+     never shrunk to fit — so bigger-than-panel trees scroll on both axes,
+     and "Fit" shrinks them only on explicit request. */
+  flex: none;
+  width: fit-content;
+  max-width: calc(100vw - 48px - max(0px, (100vw - 900px) / 2));
+  max-height: min(80vh, 1500px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px 20px;
+}
+
+.map-svg {
+  display: block;
+}
+
+/* zoom toolbar sticks to the visible corner of the scrollport */
+.map-toolbar {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 6px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+.zoom-btn,
+.zoom-fit {
+  padding: 5px 11px;
+  font: inherit;
+  font-size: .82rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+
+.zoom-btn { min-width: 32px; }
+
+.zoom-fit { font-weight: 600; color: var(--text-muted); }
+
+.zoom-btn:hover,
+.zoom-fit:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.zoom-level {
+  min-width: 44px;
+  text-align: center;
+  font-size: .78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-node { cursor: pointer; outline: none; }
+
+.map-node rect.box {
+  fill: var(--surface-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  transition: fill .12s, stroke .12s;
+}
+
+.map-node .map-node-lemma {
+  fill: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.map-node .map-node-count {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.map-pos-chip rect { fill: var(--pos-other); }
+
+.map-pos-chip text {
+  fill: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+
+.map-pos-chip.verb rect { fill: var(--pos-verb); }
+.map-pos-chip.noun rect { fill: var(--pos-noun); }
+.map-pos-chip.adj rect { fill: var(--pos-adj); }
+.map-pos-chip.adv rect { fill: var(--pos-adv); }
+
+/* root/head of the family: accent-tinted; selected word: heavy accent border */
+.map-node.is-root rect.box {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.map-node.is-selected rect.box {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.map-node.is-selected .map-node-lemma { font-weight: 800; fill: var(--accent-strong); }
+
+/* hover/focus: the path back to the root lights up; everything else dims */
+.map-svg:has(.map-node.is-hovered) .map-node:not(.is-path),
+.map-svg:has(.map-node.is-hovered) .map-edge:not(.is-path),
+.map-svg:has(.map-node.is-hovered) .map-edge-label:not(.is-path) {
+  opacity: .38;
+}
+
+/* hover/focus: the path back to the root lights up */
+.map-node.is-hovered rect.box { fill: var(--accent-soft); }
+
+.map-node.is-path rect.box {
+  fill: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-2));
+  stroke: var(--accent-strong);
+  stroke-width: 2;
+}
+
+.map-node.is-path .map-node-lemma { fill: var(--accent-strong); }
+
+.map-node:focus rect.box {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-dasharray: 5 3;
+}
+
+.map-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-muted) 42%, var(--surface));
+  stroke-width: 1.5;
+  transition: stroke .12s, stroke-width .12s;
+}
+
+.map-edge.is-path {
+  stroke: var(--accent);
+  stroke-width: 2.4;
+}
+
+.map-edge-label {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 6px;
+  stroke-linejoin: round;
+}
+
+.map-edge-label.is-path {
+  fill: var(--accent-strong);
+  font-weight: 700;
+}
+
+.map-collapse-badge { cursor: pointer; outline: none; }
+
+.map-collapse-badge circle {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+  stroke-width: 1.5;
+}
+
+.map-collapse-badge text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
+.map-collapse-badge:hover circle,
+.map-collapse-badge:focus-visible circle { fill: var(--accent-strong); }
+
+/* ---------- cousins strip ---------- */
+.cousins-strip {
+  /* inset + tinted + dashed: clearly a footnote to the family, not a peer */
+  margin-inline: 28px;
+  background: var(--surface-2);
+  border: 1px dashed color-mix(in srgb, var(--border) 55%, var(--text-muted));
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.cousins-title { margin: 0 0 4px; font-size: .98rem; }
+
+.cousins-note { margin: 0 0 12px; font-size: .8rem; color: var(--text-muted); }
+
+.cousins-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.cousin-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 13px;
+  font: inherit;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+
+.cousin-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cousin-word { font-weight: 700; font-size: .92rem; }
+
+.cousin-path { font-size: .72rem; color: var(--text-muted); }
+
 /* ---------- data attribution footer ---------- */
 .data-attribution {
   max-width: 900px;
@@ -528,4 +874,9 @@ body {
   .show-all { padding: 8px 16px; }
   .member-card { padding: 14px; }
   .form-chip { font-size: .78rem; }
+  .map-wrap { width: 100%; margin-left: 0; padding: 14px 10px; }
+  .ancestry-ribbon, .cousins-strip { padding: 12px 14px; }
+  .cousins-strip { margin-inline: 0; }
+  .view-toggle { align-self: stretch; }
+  .view-btn { flex: 1; }
 }

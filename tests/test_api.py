@@ -120,3 +120,109 @@ def test_search_mienta_group_is_never_split_by_limit():
     rows = res.json()["results"]
     idxs = [i for i, row in enumerate(rows) if row["form"] == "mienta"]
     assert len(idxs) == 2 and idxs[1] == idxs[0] + 1
+
+
+# ---------------------------------------------------------------------------
+# The three new analyze keys: tree, ancestry, cousins (frozen contract).
+# ---------------------------------------------------------------------------
+
+def _analyze_first(query, form=None, lemma=None, pos=None):
+    """Search for a word and analyze the first matching row."""
+    rows = client.get("/api/search", params={"q": query}).json()["results"]
+    row = next(
+        (r for r in rows if (form is None or r["form"] == form) and (lemma is None or r["lemma"] == lemma) and (pos is None or r["pos"] == pos)),
+        rows[0],
+    )
+    res = client.get("/api/analyze", params={"id": row["id"]})
+    assert res.status_code == 200
+    return res.json()
+
+
+def test_analyze_hacer_tree_is_depth_first_and_enriched():
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    tree = data["tree"]
+    assert tree["root_lemma_id"] is not None
+    nodes = tree["nodes"]
+    assert len(nodes) == 26
+    # frozen contract: depth-first, parent always before child
+    seen = set()
+    for n in nodes:
+        if n["parent_id"] is not None:
+            assert n["parent_id"] in seen, f"parent of {n['lemma']} appears after it"
+        seen.add(n["lemma_id"])
+    root = next(n for n in nodes if n["parent_id"] is None)
+    assert root["lemma"] == "hacer" and root["relation"] == "root"
+    # the selected entry is flagged
+    selected = [n for n in nodes if n["is_selected"]]
+    assert len(selected) == 1 and selected[0]["lemma"] == "hacer" and selected[0]["pos"] == "verb"
+    # every node carries the enrichment fields
+    for n in nodes:
+        assert n["pos"] and "gloss" in n and n["form_count"] > 0 and "freq" in n and n["depth"] >= 0
+    # the two required multi-level chains
+    by_id = {n["lemma_id"]: n for n in nodes}
+    by_lemma_pos = {(n["lemma"], n["pos"]): n for n in nodes}
+    assert by_lemma_pos[("hacendar", "verb")]["parent_id"] == by_lemma_pos[("hacienda", "noun")]["lemma_id"]
+    assert by_lemma_pos[("hacendado", "noun")]["parent_id"] == by_lemma_pos[("hacendar", "verb")]["lemma_id"]
+    assert by_lemma_pos[("hechicero", "noun")]["parent_id"] == by_lemma_pos[("hechizo", "noun")]["lemma_id"]
+    # depths follow the chains
+    assert by_id[tree["root_lemma_id"]]["depth"] == 0
+    assert by_lemma_pos[("hacendado", "noun")]["depth"] == 3
+    assert by_lemma_pos[("hechicero", "noun")]["depth"] == 2
+
+
+def test_analyze_satisfacer_ancestry_borrowed_chain():
+    data = _analyze_first("satisfacer", form="satisfacer", lemma="satisfacer", pos="verb")
+    ancestry = data["ancestry"]
+    # payload is newest-first: the word itself, then its etymon chain backwards
+    assert [a["word"] for a in ancestry] == ["satisfacer", "satisfacere", "facere"]
+    assert [a["lang"] for a in ancestry] == ["es", "la", "la"]
+    modes = {a["word"]: a["mode"] for a in ancestry}
+    assert modes["satisfacere"] == "borrowed" and modes["facere"] == "derived"
+    assert modes["satisfacer"] is None
+    assert ancestry[1]["note"] == "satis- + facere"
+
+
+def test_analyze_hechizo_ancestry_inherited():
+    data = _analyze_first("hechizo", form="hechizo", lemma="hechizo", pos="noun")
+    ancestry = data["ancestry"]
+    assert [a["word"] for a in ancestry] == ["hechizo", "facticius", "facere"]
+    assert {a["word"]: a["mode"] for a in ancestry}["facticius"] == "inherited"
+
+
+def test_analyze_heder_single_node_family_and_empty_ancestry():
+    data = _analyze_first("heder")
+    assert data["selected"]["lemma"] == "heder"
+    nodes = data["tree"]["nodes"]
+    assert len(nodes) == 1
+    assert nodes[0]["lemma"] == "heder" and nodes[0]["parent_id"] is None
+    assert nodes[0]["is_selected"] is True
+    assert data["ancestry"] == []
+    assert data["cousins"] is None
+
+
+def test_analyze_echar_cousins_and_ancestry():
+    data = _analyze_first("echar", form="echar", lemma="echar", pos="verb")
+    assert [a["word"] for a in data["ancestry"]] == ["echar", "iactāre"]
+    cousins = data["cousins"]
+    assert cousins is not None
+    assert cousins["shared_etymon"]["word"] == "iactāre"
+    assert "cutoff" in cousins["note"]
+    assert [(m["lemma"], m["pos"]) for m in cousins["members"]] == [("proyectar", "verb"), ("objetar", "verb")]
+    assert all(m["entry_id"] and m["path"] and m["family_head"] for m in cousins["members"])
+    # cousin entry ids must resolve to real analyses (the chips navigate)
+    for m in cousins["members"]:
+        res = client.get("/api/analyze", params={"id": m["entry_id"]})
+        assert res.status_code == 200
+
+
+def test_analyze_mentir_synthesized_star_tree():
+    # families without an explicit fixture tree synthesize a star: every
+    # non-head member hangs directly off the head
+    data = _analyze_first("mentir", form="mentir", lemma="mentir", pos="verb")
+    nodes = data["tree"]["nodes"]
+    root = next(n for n in nodes if n["parent_id"] is None)
+    assert root["lemma"] == "mentir"
+    others = [n for n in nodes if n["parent_id"] is not None]
+    assert len(others) == len(nodes) - 1
+    assert all(n["parent_id"] == root["lemma_id"] for n in others)
+    assert all(n["depth"] == 1 for n in others)

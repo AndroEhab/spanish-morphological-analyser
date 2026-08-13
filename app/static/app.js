@@ -28,6 +28,55 @@
   const expandedSections = new Set(); // pos keys whose full lemma list is shown
   const expandedClitics = new Set(); // member keys whose clitic forms are expanded
 
+  /* ---------------- map / list view state ---------------- */
+
+  const VIEW_KEY = "sma.view";       // localStorage key remembering Map | List
+  const MAP_COL_W = 320;             // horizontal pitch between tree columns
+  const MAP_ROW_H = 54;              // vertical pitch between leaf rows
+  const MAP_NODE_H = 44;             // node box height
+  const MAP_COLLAPSE_MIN = 25;         // trees above this size collapse deep subtrees
+  const MAP_COLLAPSE_AGGRESSIVE = 30;  // trees above this size start as root + direct children
+  const MAP_COLLAPSE_DEPTH = 3;        // depth at which deep subtrees collapse (25-30 node trees)
+  const NS = "http://www.w3.org/2000/svg";
+  let lastData = null;               // most recent analyze payload (toggle re-renders from it)
+  let measurer = null;               // shared canvas 2d context used to measure SVG text
+  let fontFamily = null;
+
+  function currentView() {
+    try {
+      return localStorage.getItem(VIEW_KEY) === "map" ? "map" : "list";
+    } catch {
+      return "list";
+    }
+  }
+
+  function measureText(text, weight, size) {
+    if (!measurer) measurer = document.createElement("canvas").getContext("2d");
+    if (!fontFamily) fontFamily = getComputedStyle(document.body).fontFamily;
+    measurer.font = `${weight} ${size}px ${fontFamily}`;
+    return measurer.measureText(text).width;
+  }
+
+  function truncateTo(text, maxWidth, weight, size) {
+    if (measureText(text, weight, size) <= maxWidth) return text;
+    let out = text;
+    while (out.length > 1 && measureText(out + "\u2026", weight, size) > maxWidth) {
+      out = out.slice(0, -1);
+    }
+    return out + "\u2026";
+  }
+
+  function svgEl(tag, attrs, text) {
+    const node = document.createElementNS(NS, tag);
+    if (attrs) {
+      for (const [key, value] of Object.entries(attrs)) {
+        if (value !== undefined && value !== null) node.setAttribute(key, String(value));
+      }
+    }
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
   /* Paradigm bucketing: forms are classified from their FIRST feature
      analysis (the API joins analyses with " · "). Rules are an explicit,
      ordered table — first matching rule wins. The clitics rule also checks
@@ -596,12 +645,682 @@
     return section;
   }
 
+  /* ---------------- Map | List toggle ---------------- */
+
+  function viewToggle() {
+    const wrap = el("div", "view-toggle");
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", "Analysis view");
+    const view = currentView();
+    for (const v of ["map", "list"]) {
+      const btn = el("button", "view-btn" + (view === v ? " active" : ""), v === "map" ? "Map" : "List");
+      btn.type = "button";
+      btn.dataset.view = v;
+      btn.setAttribute("aria-pressed", String(view === v));
+      btn.addEventListener("click", () => {
+        if (currentView() === v) return;
+        try {
+          localStorage.setItem(VIEW_KEY, v);
+        } catch {
+          /* storage unavailable (private mode): the toggle still works for the session */
+        }
+        if (lastData) renderAnalysis(lastData);
+      });
+      wrap.append(btn);
+    }
+    return wrap;
+  }
+
+  /* ---------------- ancestry ribbon ---------------- */
+
+  /* descent modes the backend can attach to an ancestry step; each one
+     styles the arrow that LEAVES that step towards the next newer word */
+  const RIBBON_LABELS = {
+    inherited: "inherited",
+    borrowed: "borrowed",
+    derived: "derived",
+  };
+
+  function arrowSvg(mode) {
+    /* wide enough that the dash/dot patterns repeat at least twice */
+    const svg = svgEl("svg", {
+      class: "anc-arrow mode-" + (mode || "inherited"),
+      viewBox: "0 0 46 12",
+      width: 46,
+      height: 12,
+      "aria-hidden": "true",
+    });
+    svg.append(svgEl("line", { x1: 1, y1: 6, x2: 34, y2: 6 }));
+    svg.append(svgEl("polygon", { points: "38,6 31,2 31,10" }));
+    return svg;
+  }
+
+  function ancestryRibbonView(steps) {
+    const wrap = el("section", "ancestry-ribbon");
+    wrap.setAttribute("aria-label", "Etymology");
+    wrap.append(el("h3", "ribbon-title", "Etymology"));
+
+    /* The frozen contract emits the chain newest-first (the Spanish word,
+       then its etymon, then that word's etymon...) while the ribbon reads
+       oldest -> newest, so reverse. A backend that already emits oldest
+       first starts with a non-Spanish step and is left untouched. */
+    const ordered = steps[0] && steps[0].lang === "es" ? steps.slice().reverse() : steps;
+
+    const chain = el("div", "ribbon-chain");
+    const modes = new Set();
+    const modeOrder = [];
+    ordered.forEach((step, i) => {
+      if (step.mode && !modes.has(step.mode)) {
+        modes.add(step.mode);
+        modeOrder.push(step.mode);
+      }
+      const stepEl = el("div", "anc-step");
+      stepEl.append(el("span", "step-lang", step.lang_label || step.lang || ""));
+      stepEl.append(el("span", "step-word", step.word));
+      if (step.note) stepEl.append(el("span", "step-note", `(${step.note})`));
+      chain.append(stepEl);
+      if (i < ordered.length - 1) chain.append(arrowSvg(ordered[i].mode));
+    });
+    wrap.append(chain);
+
+    if (modes.size) {
+      const legend = el("div", "anc-legend");
+      for (const mode of modeOrder) {
+        const item = el("span", "legend-item");
+        item.append(arrowSvg(mode));
+        item.append(el("span", null, RIBBON_LABELS[mode] || mode));
+        legend.append(item);
+      }
+      wrap.append(legend);
+    }
+    return wrap;
+  }
+
+  /* ---------------- cousins strip ---------------- */
+
+  function cousinsView(cousins) {
+    const section = el("section", "cousins-strip");
+    section.setAttribute("aria-label", "Etymological cousins");
+    const etymon = cousins.shared_etymon || {};
+    const title = `Also from ${[etymon.lang_label, etymon.word].filter(Boolean).join(" ")}`;
+    section.append(el("h3", "cousins-title", title));
+    if (cousins.note) section.append(el("p", "cousins-note", cousins.note));
+    const chips = el("div", "cousins-chips");
+    for (const member of cousins.members || []) {
+      const btn = el("button", "cousin-chip");
+      btn.type = "button";
+      if (member.gloss) btn.title = member.gloss;
+      btn.append(el("span", "cousin-word", member.lemma));
+      if (member.path) btn.append(el("span", "cousin-path", member.path));
+      btn.addEventListener("click", () => {
+        if (member.entry_id) {
+          input.value = member.lemma;
+          openAnalysis(member.entry_id);
+        }
+      });
+      chips.append(btn);
+    }
+    section.append(chips);
+    return section;
+  }
+
+  /* ---------------- family map (hand-rolled inline SVG) ---------------- */
+
+  /* Navigate to a tree node's own analysis by searching its exact lemma and
+     picking the row that matches lemma + POS (the tree contract carries no
+     entry_id, so the citation-form search is the navigation path). */
+  async function openNode(node) {
+    const lemma = node.lemma;
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(lemma)}&limit=25`);
+      const data = await res.json();
+      const rows = Array.isArray(data.results) ? data.results : [];
+      const row =
+        rows.find((r) => r.form === lemma && r.lemma === lemma && r.pos === node.pos) ||
+        rows.find((r) => r.lemma === lemma) ||
+        rows.find((r) => r.form === lemma) ||
+        null;
+      if (!row) {
+        statusEl.textContent = `No entry found for ${lemma}.`;
+        return;
+      }
+      input.value = row.form;
+      await openAnalysis(row.id);
+    } catch {
+      statusEl.textContent = "Search failed — is the server running?";
+    }
+  }
+
+  function familyMapView(tree, selectedLemma, selectedPos) {
+    const nodes = tree.nodes || [];
+    const byId = new Map();
+    const children = new Map();
+    const parentOf = new Map();
+    let root = null;
+    for (const node of nodes) {
+      const id = String(node.lemma_id);
+      byId.set(id, node);
+      if (node.parent_id == null) {
+        if (!root) root = node;
+        continue;
+      }
+      const pid = String(node.parent_id);
+      parentOf.set(id, pid);
+      if (!children.has(pid)) children.set(pid, []);
+      children.get(pid).push(node);
+    }
+    if (!root && nodes.length) root = nodes[0];
+    const rootId = root ? String(root.lemma_id) : null;
+
+    /* depth: trust the backend, fall back to a chain walk */
+    const depthOf = new Map();
+    for (const node of nodes) {
+      if (node.depth != null) depthOf.set(String(node.lemma_id), node.depth);
+    }
+    for (const node of nodes) {
+      const id = String(node.lemma_id);
+      if (depthOf.has(id)) continue;
+      let depth = 0;
+      let cur = id;
+      while (parentOf.has(cur)) {
+        cur = parentOf.get(cur);
+        depth += 1;
+      }
+      depthOf.set(id, depth);
+    }
+
+    /* Subtrees collapse behind +N badges, opened on click. Trees over the
+       aggressive threshold start as the root plus its direct children only,
+       so a very large family is never a wall of unreadable nodes; 25-30 node
+       trees collapse the subtrees below depth 2 instead. */
+    const collapsed = new Set();
+    const aggressive = nodes.length > MAP_COLLAPSE_AGGRESSIVE;
+    if (nodes.length > MAP_COLLAPSE_MIN) {
+      for (const node of nodes) {
+        const id = String(node.lemma_id);
+        const depth = depthOf.get(id);
+        if (aggressive) {
+          if (depth === 1 && (children.get(id) || []).length) collapsed.add(id);
+        } else if (depth === MAP_COLLAPSE_DEPTH - 1) {
+          const kids = children.get(id) || [];
+          if (kids.some((k) => depthOf.get(String(k.lemma_id)) >= MAP_COLLAPSE_DEPTH)) {
+            collapsed.add(id);
+          }
+        }
+      }
+    }
+
+    function isHidden(node) {
+      let cur = String(node.lemma_id);
+      while (parentOf.has(cur)) {
+        cur = parentOf.get(cur);
+        if (collapsed.has(cur)) return true;
+      }
+      return false;
+    }
+
+    function buildSvg() {
+      const visible = nodes.filter((n) => !isHidden(n));
+      if (!visible.length) return svgEl("svg", { class: "map-svg", width: 240, height: 80, viewBox: "0 0 240 80" });
+
+      function posChipWidth(pos) {
+        return Math.max(measureText((pos || "").toUpperCase(), 700, 10) + 20, 34);
+      }
+
+      /* node box widths from real text measurement (canvas), capped so a
+         column always leaves room for the edge and its label */
+      const widthOf = new Map();
+      for (const node of visible) {
+        const lemma = node.lemma || "";
+        const pos = node.pos || "";
+        const chipW = posChipWidth(pos);
+        const countW = measureText(String(node.form_count ?? 0), 600, 11) + 16;
+        const lemmaW = measureText(lemma, 700, 14);
+        const w = Math.ceil(lemmaW + chipW + countW + 30);
+        widthOf.set(String(node.lemma_id), Math.max(100, Math.min(w, 200)));
+      }
+
+      /* tidy layout: every leaf owns a row; a parent sits at the mean of
+         its children's rows (left-to-right tree, root at the left) */
+      let nextRow = 0;
+      const rowY = new Map();
+      function assignY(id) {
+        const kids = (children.get(id) || []).filter((k) => !isHidden(k));
+        if (!kids.length) {
+          const y = nextRow * MAP_ROW_H;
+          nextRow += 1;
+          rowY.set(id, y);
+          return y;
+        }
+        const ys = kids.map((k) => assignY(String(k.lemma_id)));
+        const y = (ys[0] + ys[ys.length - 1]) / 2;
+        rowY.set(id, y);
+        return y;
+      }
+      assignY(rootId);
+
+      const xOf = (id) => (depthOf.get(id) ?? 0) * MAP_COL_W + 30;
+      const nodeX = new Map();
+      for (const node of visible) nodeX.set(String(node.lemma_id), xOf(String(node.lemma_id)));
+
+      /* canvas sized to the content so small families do not leave a dead
+         scroll strip; wide/deep families scroll horizontally in .map-wrap */
+      let rightEdge = 60;
+      for (const node of visible) {
+        rightEdge = Math.max(rightEdge, nodeX.get(String(node.lemma_id)) + widthOf.get(String(node.lemma_id)));
+      }
+      const svgW = Math.max(260, rightEdge + 40);
+      const svgH = Math.max(120, nextRow * MAP_ROW_H + 24);
+
+      const svg = svgEl("svg", {
+        class: "map-svg",
+        role: "tree",
+        width: svgW,
+        height: svgH,
+        "aria-label": `Derivation family of ${root ? root.lemma : ""}: ${visible.length} of ${nodes.length} members shown; ${selectedLemma} is selected. Use arrow keys to move between words and Enter to open one.`,
+        viewBox: `0 0 ${svgW} ${svgH}`,
+      });
+
+      /* node boxes are obstacles for labels: a label that would land on top
+         of any node slides back along its edge until it clears */
+      const nodeRects = [];
+      for (const node of visible) {
+        const nid = String(node.lemma_id);
+        nodeRects.push({ x: nodeX.get(nid), y: rowY.get(nid), w: widthOf.get(nid), h: MAP_NODE_H });
+      }
+      function labelBoxClear(x, y, w) {
+        const lx0 = x - w / 2 - 2;
+        const lx1 = x + w / 2 + 2;
+        const ly0 = y - 11;
+        const ly1 = y + 2;
+        for (const r of nodeRects) {
+          if (lx0 < r.x + r.w && lx1 > r.x && ly0 < r.y + r.h && ly1 > r.y) return false;
+        }
+        return true;
+      }
+
+      /* edges (cubic bezier elbows) + labels */
+      const labelData = [];
+      for (const node of visible) {
+        const id = String(node.lemma_id);
+        if (!parentOf.has(id)) continue;
+        const pid = parentOf.get(id);
+        const x0 = nodeX.get(pid) + widthOf.get(pid) + 4;
+        const y0 = rowY.get(pid) + MAP_NODE_H / 2;
+        const x1 = nodeX.get(id) - 4;
+        const y1 = rowY.get(id) + MAP_NODE_H / 2;
+        const mx = (x0 + x1) / 2;
+        const my = (y0 + y1) / 2;
+        svg.append(
+          svgEl("path", {
+            class: "map-edge",
+            d: `M ${x0} ${y0} C ${mx} ${y0}, ${mx} ${y1}, ${x1} ${y1}`,
+            "data-from": pid,
+            "data-to": id,
+          }),
+        );
+        const run = x1 - x0;
+        const rawLabel = node.label || "";
+        if (rawLabel && rawLabel !== "root" && run > 46) {
+          /* stagger the label along the edge by the child's index within its
+             parent (30%-85%) so a fan spreads its labels horizontally instead
+             of stacking them into a column */
+          const kids = (children.get(pid) || []).filter((k) => !isHidden(k));
+          const idx = kids.findIndex((k) => String(k.lemma_id) === id);
+          const frac = kids.length > 1 ? 0.3 + 0.55 * (idx / (kids.length - 1)) : 0.62;
+          /* long derivations truncate at a sane cap with an ellipsis; the
+             full text rides in a title so hover still gives it */
+          const maxW = Math.min(run - 14, 150);
+          const text = measureText(rawLabel, 600, 11) > maxW ? truncateTo(rawLabel, maxW, 600, 11) : rawLabel;
+          const w = measureText(text, 600, 11) + 8;
+          const y = my + 2;
+          let x = x0 + run * frac;
+          if (!labelBoxClear(x, y, w)) {
+            let cleared = false;
+            for (let f = frac - 0.07; f >= 0.2 && !cleared; f -= 0.07) {
+              x = x0 + run * f;
+              if (labelBoxClear(x, y, w)) cleared = true;
+            }
+            if (!cleared) continue; // drop — the hover path reveals the relation
+          }
+          labelData.push({
+            order: nodes.indexOf(node),
+            parent: pid,
+            nodeId: id,
+            label: text,
+            full: rawLabel,
+            x,
+            y,
+            w,
+          });
+        }
+      }
+      /* repeated identical labels on sibling edges render once, on the middle
+         edge of the bundle (the relation is the same for all of them) */
+      const byParentLabel = new Map();
+      for (const ld of labelData) {
+        const key = `${ld.parent}\u0000${ld.label}`;
+        if (!byParentLabel.has(key)) byParentLabel.set(key, []);
+        byParentLabel.get(key).push(ld);
+      }
+      const deduped = [];
+      for (const group of byParentLabel.values()) {
+        if (group.length === 1) deduped.push(group[0]);
+        else deduped.push(group[Math.floor((group.length - 1) / 2)]);
+      }
+      /* collision backstop: when two labels still overlap after staggering,
+         keep the one that comes first in tree order */
+      const keptLabels = [];
+      for (const ld of deduped) {
+        let collides = false;
+        for (const other of keptLabels) {
+          if (Math.abs(ld.x - other.x) < (ld.w + other.w) / 2 && Math.abs(ld.y - other.y) < 14) {
+            collides = true;
+            break;
+          }
+        }
+        if (!collides) keptLabels.push(ld);
+      }
+      for (const ld of keptLabels) {
+        const t = svgEl(
+          "text",
+          { class: "map-edge-label", "data-to": ld.nodeId, x: ld.x, y: ld.y, "text-anchor": "middle" },
+          ld.label,
+        );
+        if (ld.full && ld.full !== ld.label) t.append(svgEl("title", {}, ld.full));
+        svg.append(t);
+      }
+
+      /* nodes */
+      let focusId = null;
+      for (const node of visible) {
+        const id = String(node.lemma_id);
+        const x = nodeX.get(id);
+        const y = rowY.get(id);
+        const w = widthOf.get(id);
+        const isRoot = id === rootId;
+        const isSelected = !!node.is_selected;
+        if (isSelected) focusId = id;
+        const g = svgEl("g", {
+          class: "map-node" + (isRoot ? " is-root" : "") + (isSelected ? " is-selected" : ""),
+          role: "treeitem",
+          tabindex: isSelected ? "0" : "-1",
+          "aria-level": String((depthOf.get(id) ?? 0) + 1),
+          "aria-selected": String(isSelected),
+          "data-id": id,
+        });
+        if (collapsed.has(id)) g.setAttribute("aria-expanded", "false");
+        g.append(
+          svgEl(
+            "title",
+            {},
+            `${node.lemma} — ${node.gloss || "no gloss"}\u00b7 ${node.form_count ?? 0} form${node.form_count === 1 ? "" : "s"}`,
+          ),
+        );
+        g.append(svgEl("rect", { class: "box", x, y, width: w, height: MAP_NODE_H, rx: 8 }));
+        const chipW = posChipWidth(node.pos);
+        const countW = measureText(String(node.form_count ?? 0), 600, 11) + 16;
+        const maxLemmaW = w - chipW - countW - 26;
+        g.append(
+          svgEl(
+            "text",
+            { class: "map-node-lemma", x: x + 13, y: y + MAP_NODE_H / 2 + 5 },
+            truncateTo(node.lemma || "", maxLemmaW, 700, 14),
+          ),
+        );
+        const countX = x + w - chipW - countW - 4;
+        g.append(
+          svgEl("text", { class: "map-node-count", x: countX + 6, y: y + MAP_NODE_H / 2 + 4 }, String(node.form_count ?? 0)),
+        );
+        const chip = svgEl("g", { class: "map-pos-chip " + (node.pos || "other") });
+        chip.append(svgEl("rect", { x: x + w - chipW, y: y + 12, width: chipW, height: 20, rx: 10 }));
+        chip.append(svgEl("text", { x: x + w - chipW / 2, y: y + 26, "text-anchor": "middle" }, (node.pos || "").toUpperCase()));
+        g.append(chip);
+        svg.append(g);
+      }
+
+      /* +N collapse badges (topmost so they stay clickable) */
+      if (collapsed.size) {
+        const hiddenCount = new Map();
+        for (const node of nodes) {
+          if (!isHidden(node)) continue;
+          let cur = String(node.lemma_id);
+          while (parentOf.has(cur)) {
+            const parentId = parentOf.get(cur);
+            if (collapsed.has(parentId)) {
+              hiddenCount.set(parentId, (hiddenCount.get(parentId) || 0) + 1);
+              break;
+            }
+            cur = parentId;
+          }
+        }
+        for (const [id, count] of hiddenCount) {
+          const node = byId.get(id);
+          const x = nodeX.get(id) + widthOf.get(id) + 10;
+          const y = rowY.get(id) + MAP_NODE_H / 2;
+          const badge = svgEl("g", {
+            class: "map-collapse-badge",
+            role: "button",
+            tabindex: "0",
+            "aria-label": `Expand ${count} hidden descendant${count === 1 ? "" : "s"} of ${node.lemma}`,
+            "data-id": id,
+          });
+          badge.append(svgEl("circle", { cx: x, cy: y, r: 11 }));
+          badge.append(svgEl("text", { x, y: y + 4, "text-anchor": "middle" }, `+${count}`));
+          badge.addEventListener("click", () => {
+            collapsed.delete(id);
+            render();
+          });
+          badge.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              collapsed.delete(id);
+              render();
+            }
+          });
+          svg.append(badge);
+        }
+      }
+
+      /* ---- interaction: hover/focus highlights the path to the root ---- */
+      function clearHighlight() {
+        for (const g of svg.querySelectorAll(".map-node.is-path, .map-node.is-hovered")) {
+          g.classList.remove("is-path", "is-hovered");
+        }
+        for (const path of svg.querySelectorAll(".map-edge.is-path")) path.classList.remove("is-path");
+        for (const label of svg.querySelectorAll(".map-edge-label.is-path")) label.classList.remove("is-path");
+      }
+
+      function highlightPath(g) {
+        clearHighlight();
+        const chain = new Set();
+        let cur = g.dataset.id;
+        while (cur && byId.has(cur)) {
+          chain.add(cur);
+          g.classList.add("is-hovered");
+          if (parentOf.has(cur)) cur = parentOf.get(cur);
+          else break;
+        }
+        for (const cid of chain) {
+          const nodeEl = svg.querySelector(`.map-node[data-id="${cid}"]`);
+          if (nodeEl) nodeEl.classList.add("is-path");
+        }
+        for (const path of svg.querySelectorAll(".map-edge")) {
+          if (chain.has(path.dataset.to)) path.classList.add("is-path");
+        }
+        for (const label of svg.querySelectorAll(".map-edge-label")) {
+          if (chain.has(label.dataset.to)) label.classList.add("is-path");
+        }
+      }
+
+      svg.addEventListener("mouseover", (e) => {
+        const g = e.target.closest ? e.target.closest(".map-node") : null;
+        if (g) highlightPath(g);
+      });
+      svg.addEventListener("mouseout", (e) => {
+        const g = e.target.closest ? e.target.closest(".map-node") : null;
+        if (g && g.contains(e.relatedTarget)) return;
+        clearHighlight();
+      });
+      svg.addEventListener("focusin", (e) => {
+        const g = e.target.closest ? e.target.closest(".map-node") : null;
+        if (g) highlightPath(g);
+      });
+      svg.addEventListener("focusout", (e) => {
+        if (svg.contains(e.relatedTarget)) return;
+        clearHighlight();
+      });
+
+      svg.addEventListener("click", (e) => {
+        /* the badge has its own listener; the delegated handler only opens nodes */
+        if (e.target.closest && e.target.closest(".map-collapse-badge")) return;
+        const g = e.target.closest ? e.target.closest(".map-node") : null;
+        if (!g) return;
+        const node = byId.get(g.dataset.id);
+        if (!node || node.is_selected) return;
+        openNode(node);
+      });
+
+      /* ---- keyboard: arrows move between nodes, Enter opens ---- */
+      const dfsOrder = [];
+      (function collect(id) {
+        dfsOrder.push(id);
+        for (const kid of children.get(id) || []) {
+          if (!isHidden(kid)) collect(String(kid.lemma_id));
+        }
+      })(rootId);
+
+      function focusNode(id) {
+        const g = svg.querySelector(`.map-node[data-id="${id}"]`);
+        if (!g) return;
+        for (const other of svg.querySelectorAll('.map-node[tabindex="0"]')) other.setAttribute("tabindex", "-1");
+        g.setAttribute("tabindex", "0");
+        g.focus();
+      }
+
+      svg.addEventListener("keydown", (e) => {
+        const active = document.activeElement;
+        if (!active || !active.closest) return;
+        const g = active.closest(".map-node");
+        if (!g) return;
+        if (["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "Home"].includes(e.key)) e.preventDefault();
+        const id = g.dataset.id;
+        const node = byId.get(id);
+        const idx = dfsOrder.indexOf(id);
+        let next = null;
+        switch (e.key) {
+          case "ArrowRight": {
+            const kid = (children.get(id) || []).find((k) => !isHidden(k));
+            if (kid) next = String(kid.lemma_id);
+            break;
+          }
+          case "ArrowLeft":
+            if (parentOf.has(id)) next = parentOf.get(id);
+            break;
+          case "ArrowDown":
+            if (idx >= 0 && idx < dfsOrder.length - 1) next = dfsOrder[idx + 1];
+            break;
+          case "ArrowUp":
+            if (idx > 0) next = dfsOrder[idx - 1];
+            break;
+          case "Home":
+            next = rootId;
+            break;
+          case "Enter":
+            if (node && !node.is_selected) openNode(node);
+            return;
+          default:
+            return;
+        }
+        if (next) focusNode(next);
+      });
+
+      return svg;
+    }
+
+    const wrap = el("div", "map-wrap");
+
+    /* zoom toolbar: the map renders at natural (readable) size and the
+       container scrolls; +/- zoom in place, Fit scales the whole tree into
+       view as an explicit user choice */
+    const ZOOM_MIN = 0.2;
+    const ZOOM_MAX = 2.5;
+    const ZOOM_STEP = 0.25;
+    let zoom = 1;
+    let currentSvg = null;
+    let naturalW = 0;
+    let naturalH = 0;
+
+    const toolbar = el("div", "map-toolbar");
+    toolbar.setAttribute("role", "toolbar");
+    toolbar.setAttribute("aria-label", "Map zoom");
+    const levelEl = el("span", "zoom-level", "100%");
+    levelEl.setAttribute("aria-live", "polite");
+    const outBtn = el("button", "zoom-btn", "\u2212");
+    outBtn.type = "button";
+    outBtn.setAttribute("aria-label", "Zoom out");
+    outBtn.title = "Zoom out";
+    const inBtn = el("button", "zoom-btn", "+");
+    inBtn.type = "button";
+    inBtn.setAttribute("aria-label", "Zoom in");
+    inBtn.title = "Zoom in";
+    const fitBtn = el("button", "zoom-fit", "Fit");
+    fitBtn.type = "button";
+    fitBtn.title = "Fit the whole tree into view";
+    toolbar.append(outBtn, levelEl, inBtn, fitBtn);
+
+    function applyZoom() {
+      zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+      levelEl.textContent = `${Math.round(zoom * 100)}%`;
+      if (currentSvg) currentSvg.style.transform = `scale(${zoom})`;
+    }
+    outBtn.addEventListener("click", () => {
+      zoom -= ZOOM_STEP;
+      applyZoom();
+    });
+    inBtn.addEventListener("click", () => {
+      zoom += ZOOM_STEP;
+      applyZoom();
+    });
+    fitBtn.addEventListener("click", () => {
+      if (!currentSvg || !naturalW) return;
+      const fitScale = Math.min(
+        (wrap.clientWidth - 48) / naturalW,
+        (wrap.clientHeight - 80) / naturalH,
+        1,
+      );
+      zoom = Math.max(ZOOM_MIN, fitScale);
+      applyZoom();
+      wrap.scrollLeft = 0;
+      wrap.scrollTop = 0;
+    });
+
+    let inited = false;
+    function render() {
+      currentSvg = buildSvg();
+      naturalW = currentSvg.viewBox.baseVal.width;
+      naturalH = currentSvg.viewBox.baseVal.height;
+      currentSvg.style.transform = `scale(${zoom})`;
+      wrap.replaceChildren(toolbar, currentSvg);
+      if (!inited) {
+        /* first paint: the root is at the tree's top-left, so pin the
+           scrollport there instead of leaving it wherever the browser lands */
+        wrap.scrollLeft = 0;
+        wrap.scrollTop = 0;
+        inited = true;
+      }
+    }
+    render();
+    return wrap;
+  }
+
   function renderAnalysis(data) {
     const { selected, family } = data;
     analysisEl.replaceChildren();
     expandedMembers.clear();
     expandedSections.clear();
     expandedClitics.clear();
+    lastData = data;
 
     /* header card */
     const header = el("article", "entry-card");
@@ -621,48 +1340,72 @@
     }
     analysisEl.append(header);
 
-    /* sticky mini-nav — skipped when there is only one POS group: a single
-       button that scrolls to itself is pure noise */
-    let nav = null;
-    const navButtons = [];
-    if (family.groups.length > 1) {
-      nav = el("nav", "pos-nav");
-      nav.setAttribute("aria-label", "Parts of speech");
-      family.groups.forEach((group, i) => {
-        const btn = el("button", null, group.pos_label);
-        btn.type = "button";
-        btn.addEventListener("click", () => {
-          document.getElementById(`pos-${i}`).scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-        nav.append(btn);
-        navButtons.push(btn);
-      });
-      analysisEl.append(nav);
+    /* Map | List toggle — remembered in localStorage; the list stays the
+       default until the map proves itself */
+    analysisEl.append(viewToggle());
+
+    /* the etymology ribbon sits above whichever family view is active; it
+       needs at least two steps to be worth drawing */
+    if (data.ancestry && data.ancestry.length >= 2) {
+      analysisEl.append(ancestryRibbonView(data.ancestry));
     }
 
-    /* pos sections */
-    const sections = family.groups.map((group, i) => posSection(group, i));
-    for (const section of sections) analysisEl.append(section);
+    if (currentView() === "map") {
+      if (data.tree && data.tree.nodes && data.tree.nodes.length) {
+        analysisEl.append(familyMapView(data.tree, selected.lemma, selected.pos));
+      } else {
+        analysisEl.append(el("p", "empty-note", "No derivation tree is available for this entry."));
+      }
+    } else {
+      /* sticky mini-nav — skipped when there is only one POS group: a single
+         button that scrolls to itself is pure noise */
+      let nav = null;
+      const navButtons = [];
+      if (family.groups.length > 1) {
+        nav = el("nav", "pos-nav");
+        nav.setAttribute("aria-label", "Parts of speech");
+        family.groups.forEach((group, i) => {
+          const btn = el("button", null, group.pos_label);
+          btn.type = "button";
+          btn.addEventListener("click", () => {
+            document.getElementById(`pos-${i}`).scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+          nav.append(btn);
+          navButtons.push(btn);
+        });
+        analysisEl.append(nav);
+      }
+
+      /* pos sections */
+      const sections = family.groups.map((group, i) => posSection(group, i));
+      for (const section of sections) analysisEl.append(section);
+
+      analysisEl.hidden = false;
+
+      /* scrollspy: highlight the nav button of the section currently in view */
+      if (nav) {
+        const onScroll = () => {
+          const offset = nav.offsetHeight + 48;
+          let current = 0;
+          sections.forEach((section, i) => {
+            if (section.getBoundingClientRect().top <= offset) current = i;
+          });
+          navButtons.forEach((btn, i) => btn.classList.toggle("active", i === current));
+        };
+        if (scrollspyHandler) window.removeEventListener("scroll", scrollspyHandler);
+        scrollspyHandler = onScroll;
+        window.addEventListener("scroll", onScroll, { passive: true });
+        onScroll();
+      }
+    }
 
     if (family.note) analysisEl.append(el("p", "family-note", family.note));
 
-    analysisEl.hidden = false;
+    /* cousins are context, not family: clearly separated and visually
+       secondary, and only when the backend found any */
+    if (data.cousins) analysisEl.append(cousinsView(data.cousins));
 
-    /* scrollspy: highlight the nav button of the section currently in view */
-    if (nav) {
-      const onScroll = () => {
-        const offset = nav.offsetHeight + 48;
-        let current = 0;
-        sections.forEach((section, i) => {
-          if (section.getBoundingClientRect().top <= offset) current = i;
-        });
-        navButtons.forEach((btn, i) => btn.classList.toggle("active", i === current));
-      };
-      if (scrollspyHandler) window.removeEventListener("scroll", scrollspyHandler);
-      scrollspyHandler = onScroll;
-      window.addEventListener("scroll", onScroll, { passive: true });
-      onScroll();
-    }
+    analysisEl.hidden = false;
   }
 
   async function openAnalysis(id) {

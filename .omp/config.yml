@@ -1,8 +1,8 @@
 modelRoles:
   default: anthropic/claude-opus-5:xhigh
 
-  fast_worker: opencode-go/deepseek-v4-flash:max
-  good_worker: opencode-go/deepseek-v4-pro:max
+  fast_worker: opencode-go/deepseek-v4-flash:xhigh
+  good_worker: opencode-go/deepseek-v4-flash:max
 
 task:
   agentModelOverrides:
