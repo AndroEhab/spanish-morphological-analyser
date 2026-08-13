@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
-
 from pipeline.normalize import fold_latin
+
+
+
 
 
 _INTERNAL_TEMPLATES = frozenset({
@@ -149,15 +150,21 @@ def parse_templates(
     etym_templates_raw: str | list | None,
     etym_text: str,
 ) -> dict[str, list]:
-    """Returns dict with keys: internal, etymons, doublets, etymtree_ancestors.
+    """Returns dict with keys: internal, etymons, doublets, etymtree_ancestors, prose.
 
     etymons: list of (ancestor_normalized, lang, mode, source_word)
     etymtree_ancestors: list of (ancestor_normalized, lang)
+    prose: list of (parent_word, kind) — explicit parentage statements
+        ("Deverbal from X", "Clipping of X", "From X", …) naming a Spanish
+        parent.  kind is one of: deverbal, participle, clipping,
+        back-formation, abbreviation, prothetic, univerbation, from,
+        variant, inflection.
     """
     internal: list[tuple[str, str]] = []
     etymons: list[tuple[str, str | None, str, str]] = []  # (norm, lang, mode, src)
     doublets: list[str] = []
     etymtree_ancestors: list[tuple[str, str | None]] = []  # (norm, lang)
+    prose: list[tuple[str, str]] = []  # (parent_word, kind)
 
     templates: list[dict] = []
     if isinstance(etym_templates_raw, str):
@@ -186,12 +193,13 @@ def parse_templates(
             affix_parts: list[str] = []
             bases: list[str] = []
             for k, val in parts:
+                if val.startswith(":") and ":" not in val[1:]:
+                    # template mode marker (:calque, :inh, :bor), not a component
+                    continue
                 if val.startswith("-") or val.endswith("-"):
                     affix_parts.append(val)
                 elif " " not in val:
                     bases.append(val)
-            # Last bare component is the base; earlier bare components are
-            # part of the affix (e.g. "que" + "hacer" → affix="que", base="hacer").
             if affix_parts and bases:
                 # Hyphenated affixes + last base
                 affix_str = " ".join(affix_parts)
@@ -203,6 +211,13 @@ def parse_templates(
                     internal.append((bases[-1], affix_str))
                 else:
                     internal.append((bases[0], ""))
+            # deverbal names the verb explicitly and carries no affix — the
+            # parentage statement is the evidence; record it as prose.
+            if name == "deverbal":
+                for base, _affix in internal:
+                    w = _clean_prose_word(base)
+                    if w and w != word:
+                        prose.append((w, "deverbal"))
 
         # ETY template with :af
         elif name == "ety" and args.get("1") == "es" and args.get("2") == ":af":
@@ -220,6 +235,9 @@ def parse_templates(
             for k, val in parts:
                 if val.startswith("-") or val.endswith("-"):
                     affix_parts.append(val)
+                elif val.startswith(":") and ":" not in val[1:]:
+                    # template mode marker (:calque, :inh, :bor)
+                    continue
                 elif ":" in val:
                     lang_part, word_part = _split_lang_word(val)
                     if lang_part in (None, "es") and " " not in word_part:
@@ -236,7 +254,10 @@ def parse_templates(
                 else:
                     internal.append((bases[0], ""))
 
-        elif name in _ETYMON_TEMPLATES or (name == "ety" and args.get("1") == "es"):
+        elif name in _ETYMON_TEMPLATES or (
+            name == "ety" and args.get("1") == "es"
+            and str(args.get("2", "")) not in (":deverbal", ":clip", ":clipping", ":bf", ":back-formation", ":univ")
+        ):
             _parse_etymon_template(name, args, etymons)
 
         # DOUBLET
@@ -245,16 +266,177 @@ def parse_templates(
             if twin:
                 doublets.append(twin)
 
+        # Explicit parentage templates: ety/etymon mode markers and the
+        # named clipping/back-form/abbrev/prothetic-form templates.
+        elif name == "ety" and args.get("1") == "es" and str(args.get("2", "")) in (
+            ":deverbal", ":clip", ":clipping", ":bf", ":back-formation", ":univ",
+        ):
+            kind = {
+                ":deverbal": "deverbal", ":clip": "clipping", ":clipping": "clipping",
+                ":bf": "back-formation", ":back-formation": "back-formation",
+                ":univ": "univerbation",
+            }[str(args["2"])]
+            for key in ("3", "4", "5"):
+                val = args.get(key, "")
+                if isinstance(val, str) and val:
+                    val2 = re.sub(r'<[^>]*>', '', val).strip()
+                    if not val2 or " " in val2 or ":" in val2:
+                        continue
+                    w = _clean_prose_word(val2)
+                    if w and w != word:
+                        prose.append((w, kind))
+        elif name == "etymon" and str(args.get("2", "")) == ":clip":
+            val = args.get("3", "")
+            if isinstance(val, str) and val:
+                val2 = re.sub(r'<[^>]*>', '', val).strip()
+                if val2 and " " not in val2:
+                    w = _clean_prose_word(val2)
+                    if w and w != word:
+                        prose.append((w, "clipping"))
+        elif name in ("clipping", "back-form", "abbrev", "prothetic form") and args.get("1") == "es":
+            kind = {
+                "clipping": "clipping", "back-form": "back-formation",
+                "abbrev": "abbreviation", "prothetic form": "prothetic",
+            }[name]
+            val = args.get("2", "")
+            if isinstance(val, str) and val:
+                val2 = re.sub(r'<[^>]*>', '', val).strip()
+                if val2 and " " not in val2:
+                    w = _clean_prose_word(val2)
+                    if w and w != word:
+                        prose.append((w, kind))
+
+        # surf: "By surface analysis, X + -ar" — an affix template like suffix.
+        elif name == "surf" and args.get("1") == "es":
+            parts: list[tuple[str, str]] = []
+            for key in sorted(args.keys()):
+                if key == "1" or not key.isdigit():
+                    continue
+                val = args[key]
+                if val and isinstance(val, str):
+                    parts.append((key, re.sub(r'<[^>]*>', '', val)))
+            _normalize_affix_args("surf", parts)
+            affix_parts: list[str] = []
+            bases: list[str] = []
+            for k, val in parts:
+                if val.startswith("-") or val.endswith("-"):
+                    affix_parts.append(val)
+                elif val.startswith(":") and ":" not in val[1:]:
+                    continue
+                elif " " not in val:
+                    bases.append(val)
+            if affix_parts and bases:
+                internal.append((bases[-1], " ".join(affix_parts)))
+            elif len(bases) >= 2:
+                internal.append((bases[-1], " + ".join(bases[:-1])))
+            elif bases:
+                internal.append((bases[0], ""))
+
     # Parse etymology_text tree with language detection
     tree_entries = _parse_etym_tree(etym_text)
     etymtree_ancestors.extend(tree_entries)
+    # NOTE: tree terms are deliberately NOT linked as prose parents.
+    # Etymology-tree "Spanish X" lines mix in affixes ("Spanish -eco" for
+    # Chiapas + -eco) and component words that collide with unrelated
+    # modern homographs; the audit's univerbation cases are already covered
+    # by the :univ/:af template modes and the text patterns.
+    # etymon templates naming a Spanish parent ("der|es|es|X").
+    for anc, lang, mode, _src in etymons:
+        if lang == "es" and mode == "derived":
+            w = _clean_prose_word(anc)
+            if w and w != word:
+                prose.append((w, "from"))
+    # Etymology prose naming a Spanish parent.
+    _prose_from_text(word, etym_text, prose)
+
+    # Deduplicate, preserving order.
+    seen: set[tuple[str, str]] = set()
+    deduped: list[tuple[str, str]] = []
+    for p in prose:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
 
     return {
         "internal": internal,
         "etymons": etymons,
         "doublets": doublets,
         "etymtree_ancestors": etymtree_ancestors,
+        "prose": deduped,
     }
+
+
+_PROSE_WORD = r"[^\s.,;+()\[\]<>“”‘’]+"
+
+
+def _clean_prose_word(w: str) -> str:
+    """Strip affix punctuation from a prose-captured parent word.
+
+    Only plain alphabetic Spanish words are kept — tree junk like
+    "probardeverb." or "parinflu." carries annotation markers that prove
+    the token is not a clean parent name.
+    """
+    w = (w or "").strip("-–—").strip("“”'\"")
+    if not w or len(w) < 2:
+        return ""
+    if not re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", w):
+        return ""
+    return w
+
+
+_PROSE_MID_PATTERNS = [
+    (re.compile(rf"Deverbal (?:from|of)\s+({_PROSE_WORD})", re.I), "deverbal"),
+    (re.compile(rf"Past participle of\s+({_PROSE_WORD})", re.I), "participle"),
+    (re.compile(rf"Clipping of\s+({_PROSE_WORD})", re.I), "clipping"),
+    (re.compile(rf"Back-formation from\s+({_PROSE_WORD})", re.I), "back-formation"),
+    (re.compile(rf"Abbreviation of\s+({_PROSE_WORD})", re.I), "abbreviation"),
+    (re.compile(rf"inflection of (?:the verb )?({_PROSE_WORD})", re.I), "inflection"),
+
+]
+
+
+def _prose_from_text(word: str, text: str, out: list[tuple[str, str]]) -> None:
+    """Conservative prose extraction for Spanish-parent statements.
+
+    Emits the explicit parentage patterns (deverbal from X, past
+    participle of X, clipping of X, back-formation from X, abbreviation
+    of X, inflection of X) plus sentence-initial "From X [and/or Y]"
+    candidates.  The bare "From X" candidates carry kind "from" and are
+    admitted at graph-build time ONLY when the two citation forms pass
+    the allomorph gate — the sentence is the evidence of connection, the
+    stem overlap is the precision filter.
+    """
+    if not text:
+        return
+    t = text.strip()
+    m = re.match(rf"^From\s+(?:\([^)]*\)\s+)?({_PROSE_WORD})", t)
+    if m:
+        raw = m.group(1)
+        nxt = t[m.end():].lstrip()
+        x = _clean_prose_word(raw)
+        ok = (
+            not nxt
+            or nxt[0] in ".,;:(<>[“”‘’"
+            or nxt.startswith(("and ", "by ", "or "))
+        )
+        # "From X- + Y" cites X as an affix — its bare form must never
+        # resolve to an unrelated homograph lemma.  Only a sentence-final
+        # "From super-." (a genuine clipping in prefix form) survives.
+        if raw.endswith("-") and nxt not in ("", "."):
+            ok = False
+        if x and ok:
+            if x != word:
+                out.append((x, "from"))
+            m2 = re.match(rf"^(?:and\s+|or\s+)({_PROSE_WORD})", nxt)
+            if m2:
+                y = _clean_prose_word(m2.group(1))
+                if y and y != word:
+                    out.append((y, "from"))
+    for pat, kind in _PROSE_MID_PATTERNS:
+        for m in pat.finditer(t):
+            x = _clean_prose_word(m.group(1))
+            if x and x != word:
+                out.append((x, kind))
 
 
 def _apply_alt_display(name: str, args: dict, parts: list[tuple[str, str]]) -> None:
@@ -356,10 +538,17 @@ def _parse_etymon_chain(raw: str) -> list[tuple[str | None, str, str | None]]:
             part = part[mode_match.end():]
         lang, word = _split_lang_word(part)
         if word:
-            word = word.lstrip("*")
+            # Truncate at any residual markup.  wiktextract folds display
+            # forms into the etymon arg ("niger<alt:nigrum>",
+            # "grātia<ref:<span…>>", "voco<") — the base form before the
+            # first '<' is the etymon; the rest is annotation.
+            word = word.split("<")[0].lstrip("*").strip()
+            if not word:
+                continue
             word = fold_latin(word)
             results.append((lang, word, mode))
     return results
+
 
 
 def _split_lang_word(raw: str) -> tuple[str | None, str]:
@@ -398,14 +587,18 @@ def _parse_etym_tree(etym_text: str) -> list[tuple[str, str | None]]:
         parts = stripped.rsplit(" ", 1)
         if len(parts) >= 2:
             lang_name = parts[0].strip()
-            word_part = parts[-1].lstrip("*")
+            word_part = parts[-1].split("<")[0].lstrip("*").strip()
+            # "Latin esseinflu." concatenates the "influenced by" marker.
+            if word_part.endswith("influ."):
+                word_part = word_part[:-len("influ.")].rstrip()
+            if not word_part:
+                continue
             lang_code = _detect_tree_lang(lang_name)
             normalized = fold_latin(word_part)
             if normalized:
                 results.append((normalized, lang_code))
 
     return results
-
 
 def is_usable_ancestor(ancestor_word: str, lang: str | None, mode: str | None = None) -> bool:
     """Check if an ancestor can be used for candidate pooling.

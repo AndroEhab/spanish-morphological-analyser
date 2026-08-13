@@ -66,8 +66,8 @@ def debug_e3(w1, w2):
         for lid in ids:
             rec = lemma_records[lid]
             print(f"  id={lid} pos={rec['pos']} etym_no={rec.get('etym_no',0)}")
-            print(f"  eligible: {builder._eligible(lid)}")
-            if not builder._eligible(lid):
+            print(f"  eligible: {builder._member_capable(lid)}")
+            if not builder._member_capable(lid):
                 print(f"    forms={bool(rec.get('forms'))}, gloss={rec.get('gloss','')[:50]}")
                 pos = rec.get('pos','')
                 in_closed = pos in {'conj','pron','prep','det','article','particle','num','intj','suffix','prefix','interfix','infix','name','phrase','proverb','prep_phrase','adv_phrase','character','punct','symbol'}

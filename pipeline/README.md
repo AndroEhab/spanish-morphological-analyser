@@ -4,76 +4,34 @@ The family algorithm builds a graph of Spanish lemmas and extracts connected com
 
 ## Edge Types
 
-Five edge types connect lemmas in the admission graph, applied in order:
+Six edge types connect lemmas in the admission graph, applied in order:
 
 ### E1 — Affix Edges
 Spanish-internal affixation: `des- + hacer → deshacer`, `hacer + -dor → hacedor`, `que + hacer → quehacer`.
 
 **Gates:**
-- Both endpoints must pass the eligibility predicate (non-closed POS, has forms, not a synonym/alternative-form gloss).
+- The parent must pass the membership predicate (content POS, not stoplisted, non-redirect gloss). Form rows are NOT required — an adverb without forms can be a parent (`a- + fuera → afuera`).
 - Internal degree ≤ 50, E1 degree ≤ 30.
 - Compound rule (J2): when a lemma has ≥2 eligible bare-component parents, pick one — prefer the verb, else longest word, tie-break alphabetically. Non-selected parents are skipped.
 - Latin provenance filter: for bare-component compounds only (not prefixes/suffixes), skip the edge if the child has Latin ancestors whose root keys do not overlap the parent's. This prevents false derivations like `estable < estar + -able` when `estable` is inherited from Latin `stabilis`.
 - Affix string must be non-empty.
+- Inflectional desinences are rejected as affixes (`-á -é -í -ó -ió -a -o -aba -ara -iera -ase -iese -are -iere`). `-e` is NOT rejected — it is the gender-neutral derivational suffix (`niñe = niña + -e`); `-ía` is NOT rejected either — it is the abstract-noun suffix (`demasía = demás + -ía`, `alegría = alegre + -ía`).
 
 **Labels:** `prefix- + base`, `base + -suffix`, `prefix + base` (bare component). Known Spanish prefixes get a hyphen even when the template omits it (`contra- + hacer`). Circumfixes render as `prefix- + base + -suffix`.
 
-**E1 eligibility note:** The eligibility predicate is only required of the
-*parent* endpoint for E1 edges.  Ineligible children (e.g. adverbs that
-carry no forms in Wiktionary) can still receive E1 edges from eligible
-parents.  This is how `-mente` adverbs join their adjective's family.
+**Form-based component resolution:** when an affix template's base component does not resolve to a lemma (e.g. `sola` in `sola + -mente`), the builder looks it up in the form table. If the component is a known inflected form of exactly one lemma — or one candidate lemma has a stronger POS match — that lemma is used as the endpoint. This repairs derivations whose base is cited in an inflected form.
 
-**Form-based component resolution:** When an affix template's base component
-does not resolve to a lemma (e.g. `sola` in `sola + -mente`), the builder
-looks it up in the form table.  If the component is a known inflected form of
-exactly one lemma — or one candidate lemma has a stronger POS match — that
-lemma is used as the endpoint.  This repairs derivations whose base is cited
-in an inflected form.
+**Template arg normalization:** wiktextract cites the affix of `suffix`/`suf`/`prefix`/`pre`/`surf` templates WITHOUT a hyphen (`casa + ero`, `bi + cameral`), unlike `af`/`affix` which hyphenate it. The parser normalizes the bare suffix/prefix arg of those template names to a hyphenated form so it is recognized as an affix instead of a second bare component.
 
-**Template arg normalization:** wiktextract cites the affix of
-`suffix`/`suf`/`prefix`/`pre` templates WITHOUT a hyphen (`casa + ero`,
-`bi + cameral`), unlike `af`/`affix` which hyphenate it.  The parser
-normalizes the bare suffix/prefix arg of those four template names to a
-hyphenated form so it is recognized as an affix instead of a second bare
-component.  Without this, `casero`'s `suffix` template (`casa + ero`) parses
-as a compound with base `ero` and the edge never forms.
+**Positional-arg hygiene:** only pure-numeric template args are treated as components; named args (`gloss1`, `id2`, `alt1`, `t1`, …) are dropped. Before this, `embotellamiento`'s template `{suffix|es|embotellar|gloss1=…|3=miento}` parsed with `miento` as a bare second base, which the form table then resolved to the lemma `mentir`, producing the garbage edge `mentir + embotellar`.
 
-**Positional-arg hygiene:** only pure-numeric template args are treated as
-components; named args (`gloss1`, `id2`, `alt1`, `t1`, …) are dropped.
-Before this, `embotellamiento`'s template `{suffix|es|embotellar|gloss1=…|3=miento}`
-parsed with `miento` as a bare second base, which the form table then
-resolved to the lemma `mentir`, producing the garbage edge
-`mentir + embotellar`.
+**Identity-based affix recognition:** in affix templates, a bare component is recognized as an affix by membership in a closed inventory of Spanish derivational suffixes and prefixes, not only by position. Two guards keep bases safe: a bare component is not a prefix when the last component is already hyphenated (`auto + -dromo`: `auto` is the base), and not a suffix when the first component was hyphenated in the source (`anti- + edad`, `re- + bien`: the remaining bare word is the base). With ≥3 components both may fire (`en- + red + -ar`, `geo- + centro + -ismo`); with exactly 2 at most one.
 
-**Identity-based affix recognition:** in affix templates, a bare component
-is recognized as an affix by membership in a closed inventory of Spanish
-derivational suffixes (`-miento, -ción, -sión, -dor, -dora, -ero, -era,
--ería, -ista, -ismo, -idad, -edad, -anza, -encia, -ancia, -aje, -azo,
--ada, -ado, -ura, -ble, -ible, -able, -oso, -osa, -illo, -illa, -ito,
--ita, -ón, -ona, -uelo, -eño, -ense, -ico, -al, -ar, -orio, -ivo, -ante,
--ente, -mente`) and prefixes (`des-, re-, contra-, anti-, in-, …`), not
-only by position.  Two guards keep bases safe: a bare component is not a
-prefix when the last component is already hyphenated (`auto + -dromo`:
-`auto` is the base), and not a suffix when the first component was
-hyphenated in the source (`anti- + edad`, `re- + bien`: the remaining
-bare word is the base).  With ≥3 components both may fire
-(`en- + red + -ar`, `geo- + centro + -ismo`); with exactly 2 at most one.
-
-**Form-table resolution guards:** when a template base is not a lemma, the
-form table is consulted to repair bases cited in an inflected form
-(`sola → solo`, `manos → mano`).  Four guards contain it:
-- Exact word matches outrank accent-folded ones (`baja` wins over `bajá`,
-  `mano` over `maño`) — template bases are accent-free (`camara → cámara`).
-- A word in the base slot that IS a derivational affix by identity never
-  resolves (`miento` is a suffix, not a base — it must never become
-  `mentir`).
-- Capitalized bases (place/person names) resolve only to a case/plural
-  variant of themselves (`Newton → newton`, `Tortugas → tortuga`), never
-  to a similarly spelled verb (`Aspe → aspar`, `Muño → munir`).
-- With several distinct candidate lemmas, only inflectional variants of
-  the cited base are accepted (`ceda` vs `ceder`/`cerda` resolves to
-  nothing; `seguida → seguido`, `follado → follar`).  A lemma never
-  resolves to itself as parent.
+**Form-table resolution guards:** when a template base is not a lemma, the form table is consulted to repair bases cited in an inflected form (`sola → solo`, `manos → mano`). Four guards contain it:
+- Exact word matches outrank accent-folded ones (`baja` wins over `bajá`, `mano` over `maño`).
+- A word in the base slot that IS a derivational affix by identity never resolves (`miento` is a suffix, not a base — it must never become `mentir`).
+- Capitalized bases (place/person names) resolve only to a case/plural variant of themselves (`Newton → newton`, `Tortugas → tortuga`), never to a similarly spelled verb (`Aspe → aspar`, `Muño → munir`).
+- With several distinct candidate lemmas, only inflectional variants of the cited base are accepted. A lemma never resolves to itself as parent.
 
 ### E2 — Paradigm Edges
 Verbs sharing the same conjugation residual key are connected if they are derivationally related.
@@ -85,17 +43,36 @@ Verbs sharing the same conjugation residual key are connected if they are deriva
 
 **Bucket cap:** Only paradigm buckets with ≤40 members are family-forming. Larger buckets (the regular `-ar`/`-er`/`-ir` classes, thousands of verbs) carry no family information and are excluded.
 
+### Prose Edges — Explicit Parentage Statements
+Admitted kinds assert parentage explicitly: `deverbal from X`, `clipping of X`, `past participle of X`, `back-formation from X`, `abbreviation of X`, `prothetic form of X`, `univerbation of X`, `inflection of X`.  These rank above computed root-key matches but below affix templates: `affix > paradigm > prose > root-key > derived`.
+
+The bare `From X` sentence (kind `from`) is admitted ONLY through the
+two-gate design used everywhere else in this system: the sentence is the
+evidence of connection, an allomorph test is the precision filter.  A
+`from`/`variant` candidate becomes an edge only when the named parent
+resolves to an existing Spanish lemma AND the two citation forms share a
+≥4-character allomorph (one accent-folded form starts with a ≥4-char
+allomorph of the other, after at most one Spanish-prefix strip).
+`gracias`/`gracia` share `graci`; `querida`/`querer` share `quer`; a vague
+cognate or semantic influence almost never shares a 4-char stem and is
+rejected.
+
+**Deliberately NOT sources:**
+- Etymology-tree "Spanish X" lines — they mix in affixes (`Spanish -eco` for Chiapas + -eco) and component words that collide with unrelated modern homographs (the tree of `hijo` names Old Spanish `fijo`, which would resolve to the unrelated modern lemma `fijo` "fixed").
+- Affix-shaped parents (`From narco- (“drugs”) + policía`) — the bare form would resolve to an unrelated homograph; only a sentence-final `From super-.` survives.
+- The `+`-continuation of "From X + Y" — it names a suffix, whose bare form resolves to an unrelated homograph (`ismo` "ism", `ario` "Aryan", `auto` "car").
+- Doublet templates — see below.
+
+**Compound guard:** a prose edge is skipped when the parent is a component of the child's own compound (bare or hyphenated affix — `matar` in `mata + ojos`, `tele-` in `tele- + tienda`).  The J2 mirror: a compound attaches to its last base via E1 and must not re-attach its other components.
+
+**Labels** name the relation: `deverbal from probar`, `clipping of automóvil`, `back-formation from ama`, `past participle of querer`, `from gracia`, `prothetic form of entrar`.
+
 ### E3 — Root-Key Edges
 Words whose Latin ancestors share a computed root key are connected. The Latin root key is `first5` of the ancestor (after stripping Latin prefixes) plus, for verb-shaped ancestors, a supine key `first3 + "T"`.
 
-**Note — truncated stems deliberately REJECTED here:** the E4/E4b gates
-admit truncated citation stems as allomorphs (see below), but E3 does NOT.
-Truncation was measured for E3 and rejected: rescue precision was ~60%
-(computed supine-T keys collide with truncated stems — `beleño ↔
-belenismo` via `belen`, `carecer ↔ careo` via `care`, `barracuda ↔ barro`
-via `barT`), versus ~97% for E4/E4b.  Do not re-add truncated stems to the
-E3 allomorph set.
+**Latin-only keys:** root keys are generated ONLY from `la*`-language ancestors. Old Spanish citations (`osp "libro"`, `osp "librar"`) are Spanish words — deriving Latin supine keys from them makes `liber` "book" and `liberare` "free" collide and merges `libro` with the free-family.
 
+**Truncated stems deliberately REJECTED here:** the E4/E4b gates admit truncated citation stems as allomorphs (see below), but E3 does NOT. Truncation was measured for E3 and rejected: rescue precision was ~60% (computed supine-T keys collide with truncated stems), versus ~97% for E4/E4b. Do not re-add truncated stems to the E3 allomorph set.
 
 **Additional gates:**
 - Both words must not be in `borrowed_lemmas`.
@@ -105,55 +82,46 @@ E3 allomorph set.
 ### E4 — Derived Edges
 Words listed in each other's `derived` field from Wiktionary. Additionally requires shared Latin root keys — the allomorph test alone is not enough, as Wiktionary's "derived" sections mix in antonyms and compounds that bridge unrelated Latin roots.
 
-**Truncated-stem allomorphs:** for the allomorph test, E4 (and E4b) also
-admit the accent-folded citation form minus a final `-a`/`-o`/`-e`, bounded
-by `_MIN_TRUNC_STEM` (4).  Spanish derivation drops the theme vowel
-(`cámara → camar-` in `camarero`), which the plain citation form can never
-match.  The truncated stem is a FILTER on the dictionary's own derived/
-related lists, never a generator.  It is deliberately NOT admitted by E3:
-measured rescue precision there was ~60% (computed supine-T keys collide
-with truncated stems — `beleño ↔ belenismo` via `belen`), versus ~97% for
-E4/E4b.
+**No id-ordering condition:** derived/related lists are per-lemma and asymmetric — every listed pair is visited regardless of lemma-id order (previously pairs with `rid <= lid` were silently dropped).
 
-### E4b — Related Edges (Substring-Gated)
-Words in each other's `related` field may create an edge ONLY if one word's citation form contains the other as a substring. `mentira` contains `mentir` → edge created. `mente` does not contain `mentir` → excluded. This prevents the `related` field (which lists etymologically adjacent but distinct words) from chaining unrelated families.
+**Compound guard:** same J2 mirror as prose — a derived item that is a bare component of the child's own compound (`matar` in `mataojos = mata + ojos`) is skipped.
+
+**Truncated-stem allomorphs:** for the allomorph test, E4 (and E4b) also admit the accent-folded citation form minus a final `-a`/`-o`/`-e`, bounded by `_MIN_TRUNC_STEM` (4). Spanish derivation drops the theme vowel (`cámara → camar-` in `camarero`), which the plain citation form can never match. The truncated stem is a FILTER on the dictionary's own derived/related lists, never a generator. It is deliberately NOT admitted by E3.
+
+### E4b — Related Edges
+Words in each other's `related` field may create an edge when any of these hold:
+
+- **(a) Accent variant** — same folded spelling (`aún`/`aun`, `gombo`/`gombó`, `dónde`/`donde`).
+- **(b) Substring containment AND allomorph prefix** — one citation form contains the other AND the target starts with a source stem. This pair of gates stops `mentir ↔ mente` ("mente" starts with "ment" but neither citation contains the other) and `bien ↔ bienhechor` ("bien" is stripped as a Spanish prefix before the allomorph test).
+- **(c) Strict inflectional pair** — one word equals the other plus a single trailing character (`gracias`/`gracia`), or an equal-length pair differing only in the final 1–2 characters (`hija`/`hijo`). Deliberately stricter than the form-table's rank test, whose 2-vs-1 drops admit `mentir`/`mente` through the 4-char stem "ment".
+- **(d) Shared Latin root key** — exact non-supine overlap of any-mode ancestor keys, with two hard restrictions: the pair must have DISJOINT ancestor sets (a pair sharing the SAME exact etymon — `ir`/`ser` both citing `esse` — is a suppletion or synonym chain, not a derivation), and the branch is disabled when one citation contains the other (a compound component cannot re-enter through root keys). Prefix-level key matches are deliberately rejected: `sentire`/`sedentare` (`sentir`/`sentar`) collide at first3 AND first4, so any looser test re-bridges unrelated roots. Cost: `ley`↔`legal` cannot connect — the real etymons `legem`/`legalis` differ at the 4th character and every looser test provably admits `sentir`↔`sentar`.
 
 ### E5 — POS Homograph Edges
-Two lemma entries with the same `word` that share an etymology must land in
-the same family.  This merges the adjective, adverb, noun, and interjection
-entries of a single lexeme (e.g. `rápido` adj + `rápido` adv + `rápido`
-noun).  Entries with `pos = 'name'` (proper nouns) are excluded — they are
-not content-word homographs.
+Two lemma entries with the same `word` that share an etymology must land in the same family. The POS exclusion does NOT apply here — merging a word with itself can never introduce a bridge. Entries with `pos = 'name'` (proper nouns) are excluded — they are not content-word homographs.
+## Head Selection
+The head is the member that is a transitive ancestor of the most other
+members in the directed graph of E1 (affix) and prose parent edges — the
+word everything else was built from.  Tie-break: frequency desc, then
+shortest citation form, then word asc.  In a pure root-key/E5 cluster with
+no directed edges, the tie-break (frequency, then length) applies directly.
+The head must additionally pass head eligibility: content POS and at least
+one form row.
 
-**Gate:** overlapping ancestor sets, OR one entry has no etymology of its own
-(kaikki routinely omits etymology on the secondary POS of a single lexeme).
-Never merge on spelling alone: entries whose ancestors don't overlap AND both
-have some etymology data (ancestors or internal derivation) remain separate
-(e.g. `haz` < `fascis` vs `haz` < `facies`).
-
-**Labels:** from the member's own POS perspective, e.g. the adverb entry
-reads `adv use of rápido`, the noun entry `noun use of rápido`.
-
-## Eligibility Predicate
-A lemma is eligible if:
-- POS is not in `_CLOSED_POS` (conj, pron, prep, det, article, particle, num, intj, suffix, prefix, interfix, infix, name, phrase, proverb, prep_phrase, adv_phrase).
-- Folded word is not in `_FUNC_STOPLIST`.
-- Has at least one form record.
+## Eligibility
 - Gloss does not start with "synonym", "alternative form/spelling", "obsolete form/spelling", "misspelling", "superseded spelling", "archaic form", "eye dialect", or "inflection of".
 
-Ineligible lemmas can be members of families (edges to them are allowed) but cannot be family heads.
+**Form rows are NOT required for membership** — invariable words and form-less adverbs (`gracias`, `así`, `fuera`, `dentro`, `arriba`, `encima`, `acerca`, `anoche`, `izquierda`, `eros`) are real family members.
 
-## Head Selection
-Within each component, the eligible lemma that minimizes
-`(has_e1_parent, POS-order, -frequency, word_length, -affix_degree, word)`
-is the family head.  Members with no E1 parent inside the component are
-strongly preferred — the derivational base (e.g. `rápido`) wins over the
-derived noun (`rapidez`).  Among roots, the ordering continues.  POS order:
-verb(0) < adj(1) < noun(2) < adv(3) < other(99).  The shortest verb is
-virtually always the base: `poner` over `imponer`, `hacer` over `deshacer`.
+**Closed-class POSes** (`conj, pron, prep, det, article, particle, num, intj, name`) may be non-E5 edge endpoints but are **capped at degree 1**: only their single best edge is kept, by relation precedence (affix > paradigm > prose > root-key > derived). A degree-1 leaf cannot bridge two families — this replaces the old blanket exclusion, under which `gracias`/`adiós`/`demás`/`afuera` could never link to anything, not even their own homograph.
+
+**Heads** additionally require: content POS (not closed-class) AND at least one form row.
+
+## Doublets — deliberately NOT edges
+`doublet`/`dbt` templates pair a learned borrowing with its inherited twin (`factura ↔ hechura`, `era ↔ área`, `sino ↔ signo`). This is exactly the pattern the `hacer` cutoff excludes: loading doublets would pull `factura` into `hacer`'s family through `hechura`, and gating them by root keys re-bridges the same borrowings. Any borrowed-side exclusion kills the wanted cases too (`era ↔ área` has a borrowed side). Doublets stay parsed-but-unloaded; the related 14 audit items are re-classified as non-actionable, not fixed.
+
 
 ## BFS Label Assignment
-BFS computes depths for all members. Each non-head member selects the best incoming edge from neighbors at **strictly smaller depth** — self-referential labels are structurally impossible. Candidates rank by: edge-type precedence (affix 0 > paradigm 1 > root-key 2 > derived 3 > homograph 4), then neighbor depth, then neighbor citation form. For `root-key` labels, the member's own Latin ancestor is used; Spanish words in ancestor lists are filtered out.
+BFS computes depths for all members. Each non-head member selects the best incoming edge from neighbors at **strictly smaller depth** — self-referential labels are structurally impossible. Candidates rank by: edge-type precedence (affix 0 > paradigm 1 > prose 2 > root-key 3 > derived 4 > homograph 5), then neighbor depth, then neighbor citation form. For `root-key` labels, the member's own Latin ancestor is used; Spanish words in ancestor lists are filtered out.
 
 ## Worked Example: The `hacer` Family
 
@@ -182,22 +150,37 @@ BFS computes depths for all members. Each non-head member selects the best incom
 | hacendar | verb | E1 affix | `hacienda + -ar` |
 | hacendado | adj/noun | E1 affix | `hacendar + -ado` |
 
-**Why `hechura` is in:** Latin `factura` → `facT` (supine key from `tura`). Latin `facere` → `facT` (from verb `ere`). Shared `facT` + first4 overlap (`fact` vs `faci` — no, but `facio` → `faci` and `factura` → `fact`; first4 `fact` vs `faci` → no direct overlap, but `facio` and `facienda` share `faci`... actually the chain is through `facT` supine + first4 `faci` from `facienda`/`facio`).
+**Why `hechura` is in:** Latin `factura` → `facT` (supine key from `tura`). Latin `facere` → `facT` (from verb `ere`). Shared `facT` + first4 overlap.
 
 **Why `factura` is out:** `factura` (Spanish) is a learned borrowing from Latin, not inherited. Its etymon mode is "borrowed", so it enters `borrowed_lemmas` and is excluded from E3 (root-key edges). Even if it had an E1 edge, the Latin provenance filter would block it since `factura`'s own Latin ancestors don't overlap with the parent's.
 
 **Why `malhecho` is out:** Zero etymology data in wiktextract — no templates, no text, no derived/related links. Genuinely unreachable from the source data.
 
-
 ## Accepted Data Limitations
 
-Two well-understood gaps are accepted as inherent to the source data:
+- **`conducir`'s family is headed by `producir`.**  The `-ducir` verbs are
+  Latin borrowings (`producir` < `producere`) with no Spanish-internal
+  affix edge to `ducir`, so no member dominates `producir` by descendant
+  count under the head rule and `producir` — the more frequent word —
+  legitimately wins.  Accepted: the head rule is correct, the family is
+  correct, only the head word differs from the pre-closure build.
+- **`fuera`'s family is headed by `forastero`.**  `fuera` (adv) carries
+  zero Wiktionary form rows, so it fails head eligibility (forms are
+  required of heads by design); among form-bearing members `forastero`
+  wins the frequency tie-break.  `afuera`, `afueras`, `afuerino` and
+  `afuerear` are all correctly merged into that family.
+- **Bare `from X` and `variant of X` prose** are admitted only through
+  the allomorph gate (§Prose Edges).  `güey`→`buey` fails it and stays a
+  singleton; accepted.
+- **Template mode markers are never components.**  `:calque`/`:inh`/
+  `:bor`-style args in affix templates are skipped — before this guard,
+  `televisión`'s `:calque` arg parsed as the base word "calque" and
+  form-resolved to `calcar`, bridging the shoe/trace family into
+  `televisión`'s.
+- **Label integrity assertions** run at build time and cover every
+  relation: paradigm/derived labels may never splice the head word inside
+  a token, and every affix label must name its actual parent (an edge
+  endpoint) as one of its ` + ` parts.
 
-- **`malhecho`** — zero etymology data in wiktextract: no templates, no text,
-  no derived/related links.  Genuinely unreachable from the source and always
-  excluded from the `hacer` family.
-- **`lentitud`** — classified as a Latin borrowing (`:bor` from
-  `lentitūdō`) rather than Spanish-internal `lento + -tud`.  Borrowed lemmas
-  are excluded from E3 root-key edges, and the E4b substring gate blocks the
-  `related` link because the stem changes (`lent-` vs `lento`).  It remains
-  outside `lento`'s family.
+Well-understood gaps accepted as inherent to the source data:
+

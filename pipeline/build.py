@@ -97,6 +97,8 @@ def main():
     etymon_edges: list[dict] = []
     doublet_edges: list[dict] = []
     etymtree_edges: list[dict] = []
+    prose_edges: list[dict] = []
+
     
     for lid, rec in lemma_records.items():
         word = rec["word"]
@@ -132,6 +134,14 @@ def main():
                 "ancestor": ancestor,
                 "lang": lang,
             })
+
+        for parent_word, kind in parsed["prose"]:
+            prose_edges.append({
+                "lemma_id": lid,
+                "parent_word": parent_word,
+                "kind": kind,
+            })
+
     
     t_etym = time.time() - t2
     print(f"[{_ts()}]   {len(internal_edges)} internal, {len(etymon_edges)} etymon, "
@@ -208,6 +218,7 @@ def main():
     builder.load_internal_edges(internal_edges)
     builder.load_etymon_edges(etymon_edges)
     builder.load_etymtree_edges(etymtree_edges)
+    builder.load_prose_edges(prose_edges)
     builder.load_paradigm_buckets(lemma_forms_raw)
     
     # Load derived and related links (related is substring-gated in E4b).
@@ -417,8 +428,8 @@ def _write_sqlite(
             rel = families[fid]["members"].get(mid, {})
             rel_priority = {
                 "root": 0, "affix": 1, "paradigm": 2,
-                "inherited": 3, "derived": 4,
-            }.get(rel.get("relation", ""), 5)
+                "prose": 3, "inherited": 4, "derived": 5,
+            }.get(rel.get("relation", ""), 6)
             return (mid != head_id, rel_priority, lemma_records.get(mid, {}).get("word", ""))
         
         sorted_members = sorted(mids, key=_sort_key)

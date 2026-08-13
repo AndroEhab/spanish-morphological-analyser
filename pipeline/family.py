@@ -12,6 +12,9 @@ import re as _re
 from pipeline.normalize import fold, accent_strip
 from pipeline.paradigm import compute_allomorphs, strip_one_prefix, get_family_forming_buckets, compute_paradigm_key, build_paradigm_buckets
 from pipeline.etymology import _DERIV_SUFFIXES, _DERIV_PREFIXES
+
+
+
 # ----------------------------------------------------------------------------
 # Constants
 # ----------------------------------------------------------------------------
@@ -52,12 +55,19 @@ _LATIN_VERB_RE = _re.compile(r'(re|o|io|are|ere|ire|ari|iri)$')
 _LATIN_NOMINAL_RE = _re.compile(
     r'(ndus|nda|ndum|ndo|tura|tus|ta|tum|tor|torem|tio|tionem|ticius|tivus|tilis|bilis|men|mentum|trix)$')
 
-_CLOSED_POS = frozenset({
+# Closed-class content POSes: allowed as non-E5 edge endpoints but capped at
+# degree 1 (a leaf cannot bridge).  Bound morphemes and multi-word
+# expressions never take edges at all.
+_CAP_POS = frozenset({
     "conj", "pron", "prep", "det", "article", "particle",
-    "num", "intj", "suffix", "prefix", "interfix", "infix",
-    "name", "phrase", "proverb", "prep_phrase", "adv_phrase",
+    "num", "intj", "name",
+})
+_BOUND_POS = frozenset({
+    "suffix", "prefix", "interfix", "infix",
+    "phrase", "proverb", "prep_phrase", "adv_phrase",
     "character", "punct", "symbol",
 })
+_CLOSED_POS = _CAP_POS | _BOUND_POS
 
 _FUNC_STOPLIST = frozenset({
     "que", "no", "se", "lo", "la", "le", "me", "te", "nos", "os",
@@ -171,6 +181,27 @@ def _inflectional_variant_rank(base: str, cit: str) -> int:
                     return rank
     return 0
 
+
+def _is_inflectional_pair(a: str, b: str) -> bool:
+    """Strict plural/gender variant test for the E4b gate.
+
+    Admits one word equalling the other plus a single trailing character
+    (gracias/gracia) and equal-length pairs sharing everything but their
+    final 1-2 characters (hija/hijo).  Deliberately stricter than
+    _inflectional_variant_rank, whose 2-vs-1 drops admit mentir/mente
+    through the 4-char stem "ment".
+    """
+    la, lb = len(a), len(b)
+    if abs(la - lb) == 1:
+        long, short = (a, b) if la > lb else (b, a)
+        if long[:-1] == short:
+            return True
+    if la == lb:
+        for d in (1, 2):
+            if a[:-d] == b[:-d] and len(a) - d >= 3:
+                return True
+    return False
+
 def _regenerate_affix_label(rlabel: str, ref_word: str) -> str:
     """Given an affix rlabel like 'des- + hacer', replace the reference word."""
     parts = rlabel.split(" + ", 1)
@@ -218,8 +249,10 @@ class FamilyBuilder:
         self.hub_etymons: set[str] = set()
         self.hub_root_keys: set[str] = set()
 
-        self.allomorphs_cache: dict[int, set[str]] = {}
-        self._last_hubs: list[tuple[str, int]] = []
+        self.inh_root_keys: dict[int, set[str]] = defaultdict(set)
+        self.prose_parents: dict[int, list[tuple[int, str]]] = defaultdict(list)
+
+
         self.families: dict[int, dict] = {}
         self.family_of: dict[int, int] = {}
 
@@ -327,12 +360,17 @@ class FamilyBuilder:
             self.ancestor_langs[lid][anc] = lang or ""
             self.lemma_ancestors[lid].add(anc)
             self.lemma_etymon_modes[lid].add(mode)
-            if mode == "borrowed":
-                self.borrowed_lemmas.add(lid)
-            # Only inherited-mode ancestors contribute root keys (inh/inh+/inherited).
-            if mode in ("inherited", "inh", "inh+") and _is_latin_ancestor(anc, lang):
-                for rk in _latin_root_keys(anc):
+
+            # Only inherited-mode LATIN ancestors contribute root keys.
+            # Old Spanish citations (osp "libro", "librar") are Spanish
+            # words — deriving Latin supine keys from them ("libT") makes
+            # liber "book" and liberare "free" collide and merges libro
+            # with the free-family through E3.
+            if mode in ("inherited", "inh", "inh+") and (lang or "").startswith("la"):
+                rks = _latin_root_keys(anc)
+                for rk in rks:
                     self.root_key_index[rk].add(lid)
+                self.inh_root_keys[lid].update(rks)
 
     def load_etymtree_edges(self, edges):
         # Prose-tree ancestors never enter root_key_index.
@@ -344,6 +382,28 @@ class FamilyBuilder:
                 continue
             self.etymon_index[anc].add(lid)
             self.lemma_ancestors[lid].add(anc)
+
+    def load_prose_edges(self, edges):
+        """Load prose-parent links: (lemma_id, parent_word, kind).
+
+        Resolution is lemma-only (exact word match first, then accent-folded)
+        — the named parent must exist as a Spanish lemma.  Self-parents are
+        dropped.  Edges are admitted at build time only when both endpoints
+        pass the membership predicate.
+        """
+        for e in edges:
+            lid = e["lemma_id"]
+            pw = e["parent_word"]
+            kind = e.get("kind", "from")
+            pids_raw = self.word_index.get(fold(pw), [])
+            exact = [p for p in pids_raw if self.lemmas[p]["word"] == pw]
+            pids = exact or [p for p in pids_raw
+                             if accent_strip(self.lemmas[p]["word"]) == accent_strip(pw)]
+            for pid in pids:
+                if pid == lid:
+                    continue
+                self.prose_parents[lid].append((pid, kind))
+
 
     def load_paradigm_buckets(self, lemma_forms):
         verbs = []
@@ -373,15 +433,16 @@ class FamilyBuilder:
     # Eligibility
     # ------------------------------------------------------------------
 
-    def _eligible(self, lid: int) -> bool:
+    def _member_capable(self, lid: int) -> bool:
         rec = self.lemmas.get(lid)
         if rec is None:
             return False
         pos = rec.get("pos", "")
-        if pos in _CLOSED_POS:
+        if pos in _BOUND_POS:
             return False
         if fold(rec["word"]) in _FUNC_STOPLIST:
             return False
+
         # Redirect-gloss check MUST come before the forms check so that
         # synonym/alternative-form entries are always excluded, even when
         # a citation-form row has been added by another pipeline stage.
@@ -391,6 +452,17 @@ class FamilyBuilder:
             r'obsolete spelling|misspelling|superseded spelling|archaic form|'
             r'eye dialect|inflection) of\b', gloss, _re.IGNORECASE
         ):
+            return False
+        return True
+
+    def _head_eligible(self, lid: int) -> bool:
+        """Can this lemma head a family?  Content POS + forms required."""
+        rec = self.lemmas.get(lid)
+        if rec is None:
+            return False
+        if not self._member_capable(lid):
+            return False
+        if rec.get("pos", "") in _CLOSED_POS:
             return False
         if not rec.get("forms"):
             return False
@@ -450,13 +522,64 @@ class FamilyBuilder:
                 A_derived_cache[lid] = _allomorphs_for_gates(rec["word"], rec.get("pos", ""), rec.get("forms", []))
             return A_derived_cache[lid]
 
+        def _is_bare_component_of(lid: int, rid: int) -> bool:
+            """True when either side's compound affix names the other side as
+            a bare component (matar in mata + ojos, ojo in ojo + azul).
+            Mirrors the J2 rule: a compound attaches to its last base via
+            E1, and derived/related/prose evidence must not re-attach the
+            non-base component — that is exactly how unrelated families
+            bridge through compounds.
+            """
+            lwf = fold(self.lemmas[lid]["word"])
+            rwf = fold(self.lemmas[rid]["word"])
+            for src, other_fold in ((lid, rwf), (rid, lwf)):
+                for _pid, affix in self.internal_parents.get(src, ()):
+                    if not affix:
+                        continue
+                    if " " not in affix:
+                        # single-token affix: bare component ("matar" in
+                        # mata + ojos) or hyphenated prefix ("tele-" in
+                        # tele- + tienda) — either names a component word
+                        if fold(affix.strip("-")) == other_fold:
+                            return True
+                        continue
+                    if affix.startswith("-") or affix.endswith("-"):
+                        continue
+                    for comp in affix.split(" + "):
+                        if comp and fold(comp) == other_fold:
+                            return True
+            return False
+
+        # Closed-class POS lemmas may hold at most ONE non-E5 edge (a
+        # degree-1 leaf cannot bridge two families).  Edges are added in
+        # precedence order (affix → paradigm → prose → root-key → derived),
+        # so the first edge is always the best one.  E5 homograph edges are
+        # exempt: merging a word with itself introduces no bridge.
+        cap_deg: dict[int, int] = defaultdict(int)
+
+        def _add_edge(lid: int, rid: int, rel: str, rlabel: str) -> bool:
+            for end in (lid, rid):
+                if self.lemmas[end].get("pos", "") in _CAP_POS and cap_deg[end] >= 1:
+                    return False
+            cap_deg[lid] += 1
+            cap_deg[rid] += 1
+            graph[lid].add((rid, rel, rlabel))
+            graph[rid].add((lid, rel, rlabel))
+            return True
+
+
         # ---- E1: affix edges ----
         # Compute E1 degree first.
         e1_deg: dict[int, int] = defaultdict(int)
         for lid in self.lemmas:
-            child_eligible = self._eligible(lid)
+            # Stoplist words take no non-E5 edges at all — not even as
+            # children (compounds whose last base is a function word stay
+            # family-less rather than dragging the function word in).
+            if fold(self.lemmas[lid]["word"]) in _FUNC_STOPLIST:
+                continue
+            child_eligible = self._member_capable(lid)
             for pid, affix in self.internal_parents.get(lid, []):
-                if not self._eligible(pid):
+                if not self._member_capable(pid):
                     continue
                 e1_deg[lid] += 1
                 e1_deg[pid] += 1
@@ -469,16 +592,18 @@ class FamilyBuilder:
                 print(f"      {deg:4d}  {r.get('word','?')} ({r.get('pos','?')})")
 
         for lid in self.lemmas:
-            child_eligible = self._eligible(lid)
+            if fold(self.lemmas[lid]["word"]) in _FUNC_STOPLIST:
+                continue
+            child_eligible = self._member_capable(lid)
             if child_eligible and self.internal_degree.get(lid, 0) > _MAX_INTERNAL_DEGREE:
                 continue
             if child_eligible and e1_deg.get(lid, 0) > _MAX_E1_DEGREE:
                 continue
             # J2: for compounds with 2+ eligible parents, pick ONE edge target.
-            # Only apply J2 when child is eligible; ineligible children
-            # (e.g. adverbs without forms) accept all eligible parents.
+            # Only apply J2 when child is member-capable; other children
+            # (e.g. multi-word phrases) accept all eligible parents.
             eligible_parents = [(pp, aa) for pp, aa in self.internal_parents.get(lid, [])
-                                if self._eligible(pp) and self.internal_degree.get(pp, 0) <= _MAX_INTERNAL_DEGREE
+                                if self._member_capable(pp) and self.internal_degree.get(pp, 0) <= _MAX_INTERNAL_DEGREE
                                 and e1_deg.get(pp, 0) <= _MAX_E1_DEGREE]
             selected_parent = None
             if len(eligible_parents) >= 2:
@@ -488,7 +613,7 @@ class FamilyBuilder:
                 else:
                     selected_parent = max(eligible_parents, key=lambda x: (len(self.lemmas[x[0]]["word"]), self.lemmas[x[0]]["word"]))[0]
             for pid, affix in self.internal_parents.get(lid, []):
-                if not self._eligible(pid):
+                if not self._member_capable(pid):
                     continue
                 if self.internal_degree.get(pid, 0) > _MAX_INTERNAL_DEGREE:
                     continue
@@ -498,11 +623,12 @@ class FamilyBuilder:
                 if child_eligible and selected_parent is not None and pid != selected_parent:
                     continue
                 mw = self.lemmas[pid]["word"]
-                lw = self.lemmas[lid]["word"]
-                # If the child has independent Latin provenance (root keys not
-                # overlapping the parent's), skip this Spanish-internal edge.
-                # Only applies to lexical-base compounds (bare-word affixes);
-                # genuine prefixes/suffixes are exempt.
+                # Reject inflectional desinences masquerading as derivational affixes.
+                if affix and affix.startswith("-"):
+                    body = affix[1:]
+                    if body in ("á", "é", "í", "ó", "ió", "a", "o",
+                                "aba", "ara", "iera", "ase", "iese", "are", "iere"):
+                        continue
                 # Example: "estable" is not "estar + -able" — it's from Latin "stabilis".
                 if affix and not affix.startswith("-") and not affix.endswith("-"):
                     child_ancs = self.lemma_ancestors.get(lid, set())
@@ -518,14 +644,8 @@ class FamilyBuilder:
                                 parent_rks.update(_latin_root_keys(anc))
                         if child_rks and parent_rks and not (child_rks & parent_rks):
                             continue
-                # Reject inflectional desinences masquerading as derivational affixes.
-                # -á, -é, -í, -ó, -ió are verb endings, never derivational suffixes.
-                if affix and affix.startswith("-"):
-                    body = affix[1:]
-                    if body in ("á", "é", "í", "ó", "ió", "a", "e", "o",
-                                "aba", "ía", "ara", "iera", "ase", "iese", "are", "iere"):
-                        continue
                 # Generate human label from affix string, never fabricate.
+
                 if affix:
                     if " " in affix:
                         # Circumfix: "des- -ado" → "des- + base + -ado"
@@ -545,8 +665,7 @@ class FamilyBuilder:
                 else:
                     # Affix string missing from template — log and skip.
                     continue
-                graph[lid].add((pid, "affix", rlabel))
-                graph[pid].add((lid, "affix", rlabel))
+                _add_edge(lid, pid, "affix", rlabel)
 
         # ---- E2: paradigm edges ----
         for lid in self.lemmas:
@@ -591,18 +710,88 @@ class FamilyBuilder:
                         if c_folded not in [fold(dw) for dw in self.derived_links.get(hid, [])]:
                             continue
                 hw = self.lemmas[hid]["word"]
-                rlabel = f"same paradigm as {hw}"
-                graph[cid].add((hid, "paradigm", rlabel))
-                graph[hid].add((cid, "paradigm", rlabel))
+                _add_edge(cid, hid, "paradigm", rlabel)
+
+        # ---- Prose edges: explicit parentage statements ----
+        # "Deverbal from X", "Clipping of X", "Past participle of X" — the
+        # dictionary states the parent explicitly, so these outrank computed
+        # root-key matches but not affix templates.  Only kinds that assert
+        # parentage explicitly are admitted; the bare "from X" and
+        # "variant of X" gestures are dropped — they name cognates,
+        # doublets, and foreign sources as often as real Spanish parents.
+        _PROSE_LABELS = {
+            "deverbal": "deverbal from",
+            "participle": "past participle of",
+            "clipping": "clipping of",
+            "back-formation": "back-formation from",
+            "abbreviation": "abbreviation of",
+            "prothetic": "prothetic form of",
+            "univerbation": "univerbation of",
+            "from": "from",
+            "variant": "variant of",
+            "inflection": "inflection of",
+        }
+        _PROSE_KINDS = frozenset({
+            "deverbal", "participle", "clipping", "back-formation",
+            "abbreviation", "prothetic", "univerbation", "inflection",
+        })
+        # Bare "from X" / "variant of X" candidates are admitted ONLY when
+        # the two citation forms pass the allomorph test: one accent-folded
+        # form must start with a >=4-char allomorph of the other (after at
+        # most one Spanish-prefix strip).  The sentence is the evidence of
+        # connection; the stem overlap is the precision filter.
+        # gracias/gracia share "graci"; querida/querer share "quer";
+        # televisión/tele and a vague cognate almost never share a 4-char
+        # stem, so those chains die.
+        _gated_kinds = frozenset({"from", "variant"})
+        _from_gate_cache: dict[int, set[str]] = {}
+
+        def get_from_gate(lid):
+            if lid not in _from_gate_cache:
+                rec = self.lemmas[lid]
+                _from_gate_cache[lid] = compute_allomorphs(
+                    rec["word"], rec.get("pos", ""), rec.get("forms", []))
+            return _from_gate_cache[lid]
+
+        def _from_gate_ok(lid, pid):
+            lf = accent_strip(self.lemmas[lid]["word"]).lower()
+            pf = accent_strip(self.lemmas[pid]["word"]).lower()
+            ls = strip_one_prefix(lf)
+            ps = strip_one_prefix(pf)
+            return (
+                any(len(a) >= 4 and ps.startswith(a) for a in get_from_gate(lid))
+                or any(len(a) >= 4 and ls.startswith(a) for a in get_from_gate(pid))
+            )
+
+        for lid in self.lemmas:
+            if not self._member_capable(lid):
+                continue
+            for pid, kind in self.prose_parents.get(lid, []):
+                if kind in _gated_kinds:
+                    if not _from_gate_ok(lid, pid):
+                        continue
+                elif kind not in _PROSE_KINDS:
+                    continue
+                if not self._member_capable(pid):
+                    continue
+                if _is_bare_component_of(lid, pid):
+                    continue
+                mw = self.lemmas[pid]["word"]
+                rlabel = f"{_PROSE_LABELS.get(kind, 'from')} {mw}"
+                _add_edge(lid, pid, "prose", rlabel)
 
         # ---- E3: root-key edges ----
         for lid in self.lemmas:
             if lid in self.borrowed_lemmas:
                 continue
-            if not self._eligible(lid):
+            if not self._member_capable(lid):
                 continue
+
             l_keys = set()
+            anc_langs = self.ancestor_langs.get(lid, {})
             for anc in self.lemma_ancestors.get(lid, ()):
+                if not (anc_langs.get(anc, "") or "").startswith("la"):
+                    continue
                 for rk in _latin_root_keys(anc):
                     if rk.endswith('T'):
                         l_keys.add(rk)
@@ -621,7 +810,7 @@ class FamilyBuilder:
                         continue
                     if rid in self.borrowed_lemmas:
                         continue
-                    if not self._eligible(rid):
+                    if not self._member_capable(rid):
                         continue
                     rA = get_A(rid)
                     r_folded = accent_strip(self.lemmas[rid]["word"]).lower()
@@ -645,12 +834,11 @@ class FamilyBuilder:
                             rlabel = f"inherited from Latin {best}"
                         else:
                             rlabel = f"same root as {self.lemmas[lid]['word']}"
-                        graph[lid].add((rid, "root-key", rlabel))
-                        graph[rid].add((lid, "root-key", rlabel))
+                        _add_edge(lid, rid, "root-key", rlabel)
 
         # ---- E4: derived edges ----
         for lid in self.lemmas:
-            if not self._eligible(lid):
+            if not self._member_capable(lid):
                 continue
             lA = get_A_derived(lid)
             l_rks = set()
@@ -658,9 +846,14 @@ class FamilyBuilder:
                 l_rks.update(_latin_root_keys(anc))
             for dw in self.derived_links.get(lid, []):
                 for rid in self.word_index.get(fold(dw), []):
-                    if rid <= lid:
+                    # No rid <= lid ordering condition: derived/related lists
+                    # are per-lemma and asymmetric — every listed pair must
+                    # be visited regardless of id order.
+                    if rid == lid:
                         continue
-                    if not self._eligible(rid):
+                    if not self._member_capable(rid):
+                        continue
+                    if _is_bare_component_of(lid, rid):
                         continue
                     r_folded = accent_strip(self.lemmas[rid]["word"]).lower()
                     r_stripped = strip_one_prefix(r_folded)
@@ -675,79 +868,134 @@ class FamilyBuilder:
                             r_rks.update(_latin_root_keys(anc))
                         if not (l_rks and r_rks and (l_rks & r_rks)):
                             continue
-                        graph[lid].add((rid, "derived", f"related to {self.lemmas[lid]['word']}"))
-                        graph[rid].add((lid, "derived", f"related to {self.lemmas[lid]['word']}"))
+                        _add_edge(lid, rid, "derived", f"related to {self.lemmas[lid]['word']}")
 
-        # ---- E4b: related edges (substring-gated) ----
+        # ---- E4b: related edges ----
+        # Admitted when:
+        #   (a) the pair is an accent variant of one word (aun/aún, gombo/gombó);
+        #   (b) one citation form contains the other AND the target starts
+        #       with a source stem — the containment + allomorph pair that
+        #       stops mentir ↔ mente ("mente" starts with "ment" but neither
+        #       citation contains the other) and bien ↔ bienhechor ("bien"
+        #       is stripped as a Spanish prefix before the allomorph test);
+        #   (c) one is an inflectional variant of the other (gracias/gracia);
+        #   (d) the two share a Latin root key — exact non-supine overlap of
+        #       any-mode ancestor keys, or first3 overlap of inherited-mode
+        #       keys.  Branch (d) requires disjoint ancestor sets: a pair
+        #       sharing the SAME exact etymon (ir/ser both citing esse) is a
+        #       suppletion or synonym chain, not a derivation.  It is also
+        #       disabled when one citation contains the other, so a compound
+        #       component cannot re-enter through root keys.
+        e4b_cache: dict[int, tuple] = {}
+
+        def get_e4b(lid):
+            if lid not in e4b_cache:
+                l_keys = {rk for anc in self.lemma_ancestors.get(lid, ())
+                          for rk in _latin_root_keys(anc)}
+                l_nonsup = {k for k in l_keys if not k.endswith("T")}
+                l_inh = {k[:3] for k in self.inh_root_keys.get(lid, ())}
+                e4b_cache[lid] = (l_nonsup, l_inh)
+            return e4b_cache[lid]
+
         for lid in self.lemmas:
-            if not self._eligible(lid):
+            if not self._member_capable(lid):
                 continue
-            lw = self.lemmas[lid]["word"].lower()
+            lw = self.lemmas[lid]["word"]
+            lwf = fold(lw)
             lA = get_A_derived(lid)
+            l_nonsup, l_inh = get_e4b(lid)
             for rw in self.related_links.get(lid, []):
                 for rid in self.word_index.get(fold(rw), []):
-                    if rid <= lid:
+                    if rid == lid:
                         continue
-                    if not self._eligible(rid):
+                    if not self._member_capable(rid):
                         continue
-                    rww = self.lemmas[rid]["word"].lower()
-                    # Only create edge if one word contains the other as substring.
-                    if lw not in rww and rww not in lw:
+                    if _is_bare_component_of(lid, rid):
                         continue
-                    r_folded = accent_strip(self.lemmas[rid]["word"]).lower()
-                    r_stripped = strip_one_prefix(r_folded)
-                    if any(len(a) >= 3 and r_stripped.startswith(a) for a in lA):
-                        graph[lid].add((rid, "derived", f"related to {self.lemmas[lid]['word']}"))
-                        graph[rid].add((lid, "derived", f"related to {self.lemmas[lid]['word']}"))
-
-        # ---- E5: POS homograph edges ----
-        # Same lexeme with different POS hats (e.g. rápido adj/adv/noun) must
-        # land in the same family when they share etymology.  Gate: overlapping
-        # ancestor sets, or one entry has no etymology of its own.  Never merge
-        # on spelling alone — distinct etyma (haz < fascis vs haz < facies)
-        # stay apart.  Both endpoints must be eligible (names, interjections
-        # and other closed-class lemmas are excluded).
+                    rww = self.lemmas[rid]["word"]
+                    rwf = fold(rww)
+                    contained = lwf in rwf or rwf in lwf
+                    # (a) accent variant
+                    admitted = lwf == rwf
+                    child_side = None
+                    # (b) substring containment AND allomorph prefix
+                    if not admitted and contained:
+                        r_stripped = strip_one_prefix(accent_strip(rww).lower())
+                        admitted = any(len(a) >= 3 and r_stripped.startswith(a) for a in lA)
+                        child_side = rid if admitted else None
+                    # (c) strict inflectional pair (plural/gender variant)
+                    if not admitted:
+                        admitted = _is_inflectional_pair(lwf, rwf)
+                        child_side = lid if admitted else None
+                    # (d) shared Latin root key — disjoint ancestors, no
+                    # citation containment, exact non-supine overlap only.
+                    # Prefix-level key matches are rejected: sentire/sedentare
+                    # (sentir/sentar) collide at first3 and first4, so any
+                    # looser test re-bridges unrelated roots.
+                    if not admitted and not contained:
+                        if not (self.lemma_ancestors.get(lid, set()) & self.lemma_ancestors.get(rid, set())):
+                            r_nonsup, _r_inh = get_e4b(rid)
+                            if l_nonsup and r_nonsup and (l_nonsup & r_nonsup):
+                                admitted = True
+                    if admitted:
+                        if child_side is not None:
+                            pass
+                        _add_edge(lid, rid, "derived", f"related to {self.lemmas[lid]['word']}")
+        # Same lexeme with different POS hats must land in one family.  The
+        # POS exclusion does NOT apply here — merging a word with itself can
+        # never introduce a bridge.  Gate: overlapping ancestor sets; or one
+        # entry has no etymology of its own; or both entries have only
+        # internal (E1) derivation and share a parent.  Never merge on
+        # spelling alone — distinct etyma (haz < fascis vs haz < facies)
+        # stay apart.
         word_groups: dict[str, list[int]] = defaultdict(list)
         for lid in self.lemmas:
             # Exclude names (proper nouns) from E5 — they are not the same
-            # lexeme as content-word homographs.  Adverbs and interjections
-            # that happen to lack forms ARE included; their etymology gate
-            # is handled below.
+            # lexeme as content-word homographs.
             if self.lemmas[lid].get("pos") != "name":
-                 word_groups[self.lemmas[lid]["word"]].append(lid)
+                word_groups[self.lemmas[lid]["word"]].append(lid)
         for lids in word_groups.values():
             if len(lids) < 2:
                 continue
             for i in range(len(lids)):
                 a = lids[i]
                 a_ancs = self.lemma_ancestors.get(a, set())
-                a_has_e1 = bool(self.internal_parents.get(a))
+                a_e1 = {pid for pid, _ in self.internal_parents.get(a, [])}
                 for j in range(i + 1, len(lids)):
                     b = lids[j]
                     b_ancs = self.lemma_ancestors.get(b, set())
-                    b_has_e1 = bool(self.internal_parents.get(b))
-                    # Both have structured etymology (ancestors or E1).  
-                    # If ancestors overlap → same lexeme.  If not → distinct.
+                    b_e1 = {pid for pid, _ in self.internal_parents.get(b, [])}
                     if a_ancs and b_ancs:
+                        # Both have ancestry: require overlap.
                         if not (a_ancs & b_ancs):
                             continue
-                    elif (a_ancs or a_has_e1) and (b_ancs or b_has_e1):
-                        # Both have etymology data of some kind but ancestors
-                        # don't overlap (and neither is empty-etymology).
-                        continue
-                    elif not a_ancs and not a_has_e1 and not b_ancs and not b_has_e1:
+                    elif a_ancs or b_ancs:
+                        # Exactly one has ancestry: merge only when the other
+                        # has no etymology data of its own at all.
+                        if (a_ancs and b_e1) or (b_ancs and a_e1):
+                            continue
+                    elif a_e1 and b_e1:
+                        # Both derived internally: merge only on a shared
+                        # parent (demás adj/adv/pron all cite más; adiós
+                        # intj/noun both cite Dios).
+                        if not (a_e1 & b_e1):
+                            continue
+                    elif a_e1 or b_e1:
+                        pass
+                    else:
                         # Neither has any etymology data — can't judge, skip.
                         continue
                     # Label from the member's own POS perspective.
-                    # e.g. the noun entry reads "noun use of the adjective rápido".
                     a_pos = self.lemmas[a].get("pos", "?")
                     b_pos = self.lemmas[b].get("pos", "?")
                     graph[a].add((b, "homograph", f"{a_pos} use of {self.lemmas[a]['word']}"))
                     graph[b].add((a, "homograph", f"{b_pos} use of {self.lemmas[a]['word']}"))
         print(f"    Graph built: {sum(len(v) for v in graph.values()) // 2} edges")
         self.graph = graph
- 
+
         # ---- Connected components ----
+
+
         visited: set[int] = set()
         components: list[set[int]] = []
         for lid in self.lemmas:
@@ -774,24 +1022,44 @@ class FamilyBuilder:
         for comp in components:
             if not comp:
                 continue
-            # Select head.
-            eligible = [lid for lid in comp if self._eligible(lid)]
+            # Select head: the member that is a transitive ancestor of the
+            # most other members in the directed graph of E1 + prose parent
+            # edges (the word everything else was built from).  Tie-break:
+            # frequency desc, shortest citation form, then word asc.
+            eligible = [lid for lid in comp if self._head_eligible(lid)]
             if not eligible:
                 continue
 
+            # Directed parent->child edges inside the component: E1 (via
+            # internal_parents, only when the affix edge actually formed)
+            # and prose (via prose_parents, only when the prose edge formed).
+            par_child: dict[int, set[int]] = defaultdict(set)
+            for lid in comp:
+                for pid, _affix in self.internal_parents.get(lid, ()):
+                    if pid in comp and any(o == pid for o, _r, _l in graph.get(lid, ()) if _r == "affix"):
+                        par_child[pid].add(lid)
+                for pid, _kind in self.prose_parents.get(lid, ()):
+                    if pid in comp and any(o == pid for o, _r, _l in graph.get(lid, ()) if _r == "prose"):
+                        par_child[pid].add(lid)
+
+            desc_count: dict[int, int] = {}
+            for root in comp:
+                seen = set()
+                stack = [root]
+                while stack:
+                    cur = stack.pop()
+                    for ch in par_child.get(cur, ()):
+                        if ch not in seen:
+                            seen.add(ch)
+                            stack.append(ch)
+                desc_count[root] = len(seen)
+
             def _head_key(lid):
                 rec = self.lemmas[lid]
-                pos_order = {"verb": 0, "adj": 1, "noun": 2, "adv": 3}
-                n_e1 = sum(1 for o, r, l in graph.get(lid, ()) if r == "affix")
-                # Prefer derivational roots: members with no E1 parent (i.e.
-                # nothing in the family derives them) before applying POS order.
-                has_e1_parent = any(pid in comp for pid, _ in self.internal_parents.get(lid, ()))
                 return (
-                    has_e1_parent,          # False (0) = preferred (no parent)
-                    pos_order.get(rec.get("pos", ""), 99),
+                    -desc_count.get(lid, 0),
                     -rec.get("freq", 0),
                     len(rec["word"]),
-                    -n_e1,
                     rec["word"],
                 )
             head_id = min(eligible, key=_head_key)
@@ -799,7 +1067,7 @@ class FamilyBuilder:
 
             # BFS labels: first compute depths, then each member picks the best
             # edge from among neighbors at strictly smaller depth.
-            _REL_ORDER = {"affix": 0, "paradigm": 1, "root-key": 2, "derived": 3, "homograph": 4}
+            _REL_ORDER = {"affix": 0, "paradigm": 1, "prose": 2, "root-key": 3, "derived": 4, "homograph": 5}
             members: dict[int, dict] = {head_id: {"relation": "root", "relation_label": "root"}}
             depth: dict[int, int] = {head_id: 0}
             queue = [head_id]
@@ -837,15 +1105,14 @@ class FamilyBuilder:
                     pw = self.lemmas[parent]["word"]
                     # Generate label from edge type.
                     if rel == "affix":
-                        label = rlabel
-                        if mw in label and mw != pw:
-                            parts = label.split(" + ", 1)
-                            if len(parts) == 2:
-                                left, right = parts
-                                if mw in left:
-                                    label = left.replace(mw, pw) + " + " + right
-                                else:
-                                    label = left + " + " + right.replace(mw, pw)
+                        if mw in rlabel:
+                            # The edge's rlabel names the member as the
+                            # derivational base — the member is the base of
+                            # the word on the other side of this edge.
+                            label = f"base of {pw}"
+                        else:
+                            label = rlabel
+
                     elif rel == "paradigm":
                         label = f"same paradigm as {head_word}"
                     elif rel == "root-key":
@@ -871,13 +1138,16 @@ class FamilyBuilder:
                             label = f"same root as {head_word}"
                     elif rel == "derived":
                         label = f"related to {head_word}"
+                    elif rel == "prose":
+                        # Explicit parentage statement — use it verbatim
+                        # ("deverbal from probar", "clipping of automóvil").
+                        label = rlabel
                     elif rel == "homograph":
                         # Use the edge's own label (e.g. "noun use of rápido")
-                        # rather than a generic self-referential one.
                         label = rlabel
                     else:
                         label = rel
-                    members[mid] = {"relation": rel, "relation_label": label}
+                    members[mid] = {"relation": rel, "relation_label": label, "_parent": pw}
                 else:
                     members[mid] = {"relation": "root", "relation_label": "root"}
 
@@ -899,14 +1169,23 @@ class FamilyBuilder:
                     info["relation_label"] = f"related to {head_word}"
                     relation = "derived"
                     label = info["relation_label"]
-                # Only affix labels may embed the member's own word (repaired
-                # against the immediate parent in the branch above).  Every
-                # other relation's label is generated from the family head
-                # and must never be re-substituted — replacing a member
-                # substring of the head word corrupts the label
-                # ("can" + "canino" -> "caninoino").
-                if relation == "affix" and mw in label:
-                    info["relation_label"] = label.replace(mw, head_word)
+                # Build-time label integrity.  Machine-generated labels
+                # (paradigm/derived/root-key/homograph) name the family
+                # head as a full token — the head word must never appear
+                # spliced inside another token ("tele- + teleentender",
+                # "día entenderdo + -ado").  Affix labels must name their
+                if relation in ("paradigm", "derived"):
+                    for tok in _re.split(r"[\s+]+", label):
+                        if tok and tok != head_word and head_word in tok:
+                            raise AssertionError(
+                                f"head word spliced into label for {mw!r}: {label!r} "
+                                f"(token {tok!r}, head {head_word!r})")
+                if relation == "affix":
+                    parts = label.split(" + ")
+                    pw2 = info.get("_parent", "")
+                    if label != f"base of {pw2}" and pw2 not in parts:
+                        raise AssertionError(
+                            f"affix label for {mw!r} does not name its parent {pw2!r}: {label!r}")
                 if label.startswith("inherited from Latin ") and label[len("inherited from Latin "):] in {self.lemmas[l]["word"] for l in comp}:
                     info["relation_label"] = f"same root as {head_word}"
                     relation = "root-key"

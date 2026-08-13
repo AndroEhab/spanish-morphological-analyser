@@ -75,12 +75,12 @@ def build_graph(lemma_records, lemma_forms_raw):
     graph: dict[int, set[tuple[int, str, str]]] = defaultdict(set)
     
     for lid in lemma_records:
-        if not builder._eligible(lid):
+        if not builder._member_capable(lid):
             continue
         if builder.internal_degree.get(lid, 0) > 50:
             continue
         for pid, affix in builder.internal_parents.get(lid, []):
-            if not builder._eligible(pid):
+            if not builder._member_capable(pid):
                 continue
             if builder.internal_degree.get(pid, 0) > 50:
                 continue
@@ -140,7 +140,7 @@ def build_graph(lemma_records, lemma_forms_raw):
     for lid in lemma_records:
         if lid in builder.borrowed_lemmas:
             continue
-        if not builder._eligible(lid):
+        if not builder._member_capable(lid):
             continue
         l_keys = set()
         for anc in builder.lemma_ancestors.get(lid, ()):
@@ -162,7 +162,7 @@ def build_graph(lemma_records, lemma_forms_raw):
                     continue
                 if rid in builder.borrowed_lemmas:
                     continue
-                if not builder._eligible(rid):
+                if not builder._member_capable(rid):
                     continue
                 r_allos = compute_allomorphs(lemma_records[rid]["word"], lemma_records[rid].get("pos", ""), lemma_records[rid].get("forms", []))
                 r_folded = accent_strip(lemma_records[rid]["word"]).lower()
@@ -182,14 +182,14 @@ def build_graph(lemma_records, lemma_forms_raw):
                     graph[rid].add((lid, "root-key", rlabel))
 
     for lid in lemma_records:
-        if not builder._eligible(lid):
+        if not builder._member_capable(lid):
             continue
         l_allos = _allomorphs_for_gates(lemma_records[lid]["word"], lemma_records[lid].get("pos", ""), lemma_records[lid].get("forms", []))
         for dw in derived_links.get(lid, []):
             for rid in builder.word_index.get(fold(dw), []):
                 if rid <= lid:
                     continue
-                if not builder._eligible(rid):
+                if not builder._member_capable(rid):
                     continue
                 r_folded = accent_strip(lemma_records[rid]["word"]).lower()
                 r_stripped = strip_one_prefix(r_folded)
@@ -349,7 +349,7 @@ def cmd_edges(args_idx, lemma_records, graph, builder):
         ics = builder.internal_children.get(lid, [])
         if ics:
             print(f"  INTERNAL children: {[(lemma_records.get(c,{}).get('word','?'), a) for c,a in ics]}")
-        print(f"  Eligible: {builder._eligible(lid)}")
+        print(f"  Eligible: {builder._member_capable(lid)}")
         print(f"  Borrowed: {lid in builder.borrowed_lemmas}")
         print(f"  Ancestors: {sorted(builder.lemma_ancestors.get(lid, set()))[:10]}")
 
