@@ -226,3 +226,181 @@ def test_analyze_mentir_synthesized_star_tree():
     assert len(others) == len(nodes) - 1
     assert all(n["parent_id"] == root["lemma_id"] for n in others)
     assert all(n["depth"] == 1 for n in others)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 dashboard keys: query, morphology, familyPreview, origin,
+# nearbyForms, word resolution (frozen §D contract, docs
+# DESIGN_IMPLEMENTATION_PLAN.md).
+# ---------------------------------------------------------------------------
+
+def test_analyze_hacer_morphology_populated():
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    assert data["query"] == "hacer"
+    m = data["morphology"]
+    assert m["posLabel"] == "verbo"
+    assert m["summary"] == "verbo · no personal · infinitivo"
+    assert m["lexeme"] == "hac-"
+    assert m["inflection"] == "-er"
+    assert m["base"] == "hacer"
+    assert m["categoría"] == "verbo"
+    assert m["conjugationClass"] == "Segunda (-er)"
+    assert m["conjugación"] == "Segunda (-er)"
+    assert m["decomposition"] == [
+        {"segment": "hac", "label": "raíz o base léxica", "kind": "stem"},
+        {"segment": "-er", "label": "desinencia flexiva", "kind": "desinence"},
+    ]
+    assert m["alternatives"] == []
+
+
+def test_analyze_summary_accented_tense_matches_mockup():
+    # the mockup's grammatical line: imperfect, 1st person plural
+    data = _analyze_first("mentíamos", form="mentíamos", lemma="mentir", pos="verb")
+    assert data["morphology"]["summary"] == (
+        "verbo · modo indicativo · pretérito imperfecto · 1ª persona del plural"
+    )
+    assert data["morphology"]["lexeme"] == "ment-"
+    assert data["morphology"]["inflection"] == "-íamos"
+    assert data["morphology"]["conjugationClass"] == "Tercera (-ir)"
+    # the decomposition accordion labels the desinence with its grammar
+    assert data["morphology"]["decomposition"] == [
+        {"segment": "ment", "label": "raíz o base léxica", "kind": "stem"},
+        {"segment": "-íamos",
+         "label": "desinencia de pretérito imperfecto, 1ª persona del plural",
+         "kind": "desinence"},
+    ]
+
+
+def test_analyze_noun_morphology_empty_split():
+    # nouns never get a desinence split (the inventory is verbal); the
+    # empty state is lexeme/inflection null and an empty decomposition
+    data = _analyze_first("mentira", form="mentira", lemma="mentira", pos="noun")
+    m = data["morphology"]
+    assert m["posLabel"] == "sustantivo"
+    assert m["summary"] == "sustantivo · singular"
+    assert m["lexeme"] is None and m["inflection"] is None
+    assert m["conjugationClass"] is None
+    assert m["decomposition"] == []
+
+
+def test_analyze_origin_from_ancestry():
+    # hacer's fixture chain: Spanish hacer ← Latin facere (inherited);
+    # stages arrive newest-first per the frozen §D contract
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    origin = data["origin"]
+    assert origin is not None
+    assert origin["sourceLanguage"] == "latín"
+    assert origin["sourceWord"] == "facere"
+    assert origin["sourceMeaning"] is None  # Phase 1: no Latin gloss source (docs F7)
+    words = [(s["word"], s["langLabel"]) for s in origin["stages"]]
+    assert words == [("hacer", "español"), ("facere", "latín")]
+
+
+def test_analyze_origin_null_when_no_etymon():
+    data = _analyze_first("heder")
+    assert data["origin"] is None
+    assert data["ancestry"] == []
+
+
+def test_analyze_family_preview_hub_and_cap():
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    preview = data["familyPreview"]
+    assert preview["hub"] == "hacer"
+    assert preview["totalCount"] == 26  # the fixture family's real size
+    nodes = preview["nodes"]
+    assert nodes[0]["lemma"] == "hacer" and nodes[0]["relationLabel"] == "root"
+    assert nodes[0]["isSelected"] is True  # searched the head's citation
+    satellites = nodes[1:]
+    assert 6 <= len(satellites) <= 10  # docs: hub + 6-10 satellites
+    assert all(n["pos"] and "relationLabel" in n and "gloss" in n for n in satellites)
+    assert sum(1 for n in nodes if n["isSelected"]) == 1
+    # every satellite carries its derivation label (relation-type priority)
+    assert all(s["relationLabel"] for s in satellites)
+
+
+def test_analyze_family_preview_searched_inflected_form_node():
+    # searching an inflected form of the head adds a highlighted peripheral
+    # node (design.md §18-19): hub mentir + satellite mentíamos
+    data = _analyze_first("mentíamos", form="mentíamos", lemma="mentir", pos="verb")
+    nodes = data["familyPreview"]["nodes"]
+    sel = [n for n in nodes if n["isSelected"]]
+    assert len(sel) == 1 and sel[0]["lemma"] == "mentíamos"
+    assert nodes[0]["lemma"] == "mentir"
+
+
+def test_analyze_nearby_forms_present_row_for_infinitive():
+    # non-finite searches fall back to the lemma's present-indicative row
+    data = _analyze_first("mentir", form="mentir", lemma="mentir", pos="verb")
+    forms = [(f["form"], f["features"], f["isLemma"]) for f in data["nearbyForms"]]
+    assert [f[0] for f in forms] == ["miento", "mientes", "miente", "mentimos", "mentís", "mienten"]
+    assert all("present indicative" in f[1] for f in forms)
+    assert all(f[2] is False for f in forms)
+
+
+def test_analyze_nearby_forms_same_tense_row():
+    # searching an imperfect form selects the imperfect paradigm row
+    data = _analyze_first("hacía", form="hacía", lemma="hacer", pos="verb")
+    forms = [f["form"] for f in data["nearbyForms"]]
+    assert "hacía" in forms and all("imperfect" in f["features"] for f in data["nearbyForms"])
+
+
+def test_analyze_nearby_forms_empty_for_non_verb():
+    data = _analyze_first("mentira", form="mentira", lemma="mentira", pos="noun")
+    assert data["nearbyForms"] == []
+
+
+def test_analyze_phase2_phase4_keys_null():
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    assert data["englishRelatives"] is None
+    assert data["mnemonics"] is None
+    assert data["selected"]["audio"] is None
+    assert data["selected"]["ipa"] is None
+
+
+def test_analyze_word_param_resolves_top_ranked_with_alternatives():
+    # Enter/"Analizar" resolve the exact word to the dropdown's top match;
+    # the other lemma of the same surface form surfaces as an alternative
+    res = client.get("/api/analyze", params={"word": "mienta"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["selected"]["lemma"] == "mentir"  # freq 8.7 > mentar 7.5
+    alts = data["morphology"]["alternatives"]
+    assert [a["lemma"] for a in alts] == ["mentar"]
+    assert alts[0]["pos"] == "verb"
+    assert alts[0]["summary"]  # a Spanish grammatical line
+    # alternative entry ids must resolve to real analyses (they navigate)
+    other = client.get("/api/analyze", params={"id": alts[0]["entry_id"]})
+    assert other.status_code == 200
+    assert other.json()["selected"]["lemma"] == "mentar"
+
+
+def test_analyze_id_path_also_reports_alternatives():
+    data = _analyze_first("mienta", form="mienta", lemma="mentir", pos="verb")
+    assert [a["lemma"] for a in data["morphology"]["alternatives"]] == ["mentar"]
+
+
+def test_analyze_word_param_is_case_and_accent_insensitive():
+    res = client.get("/api/analyze", params={"word": "HACER"})
+    assert res.status_code == 200
+    assert res.json()["selected"]["form"] == "hacer"
+    res = client.get("/api/analyze", params={"word": "hacia"})  # → hacía
+    assert res.status_code == 200
+    assert res.json()["selected"]["form"] == "hacía"
+
+
+def test_analyze_word_param_requires_exact_match():
+    # prefixes must not resolve: "hac" is a fragment, not a word
+    res = client.get("/api/analyze", params={"word": "hac"})
+    assert res.status_code == 404
+
+
+def test_analyze_word_param_unknown_word_404():
+    res = client.get("/api/analyze", params={"word": "zzznotaword"})
+    assert res.status_code == 404
+
+
+def test_analyze_requires_exactly_one_of_id_or_word():
+    res = client.get("/api/analyze")
+    assert res.status_code == 422
+    res = client.get("/api/analyze", params={"id": "x", "word": "hacer"})
+    assert res.status_code == 422

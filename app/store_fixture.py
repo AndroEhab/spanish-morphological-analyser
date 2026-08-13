@@ -18,6 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 from unicodedata import normalize
 
+from app import enrich
+
 _FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "sample.json"
 
 # POS group order for the family view: verb, noun, adj, adv, then anything
@@ -340,7 +342,76 @@ def analyze(entry_id: str) -> dict | None:
         for pos in group_order
     ]
 
+    # ---- Phase 1 dashboard enrichment (docs/DESIGN_IMPLEMENTATION_PLAN.md §D) ----
+    # Additive and nullable; the empty values are the empty-state triggers.
+    member = entry["member"]
+    known_forms = [(f["form"], list(f["features"])) for f in member["forms"]]
+    parts = enrich.pick_clean_analysis(entry["features"])
+    if entry["pos"] == "verb":
+        stem, desinence = enrich.split_lexeme(
+            entry["form"], parts, known_forms, list(entry["features"])
+        )
+    else:
+        stem, desinence = None, None
+    pos_label = enrich.spanish_pos_label(entry["pos"])
+    conjugation = enrich.conjugation_class(entry["lemma"], entry["pos"])
+    morphology = {
+        "posLabel": pos_label,
+        "summary": enrich.spanish_summary(entry["pos"], entry["features"]),
+        "lexeme": f"{stem}-" if stem else None,
+        "inflection": f"-{desinence}" if desinence else None,
+        "base": entry["lemma"],
+        "categoría": pos_label,
+        "conjugationClass": conjugation,
+        "conjugación": conjugation,
+        "decomposition": enrich.decomposition_items(
+            entry["form"], stem, desinence, list(entry["features"])
+        ),
+        "alternatives": _fixture_alternatives(entry),
+    }
+
+    def coarse_priority(relation: str) -> int:
+        coarse = _coarse_relation(relation)
+        return {"affix": 0, "same paradigm": 1, "inherited": 2}.get(coarse, 4)
+
+    # Stable per-family node ids keyed by (lemma, pos), mirroring _tree_view.
+    node_ids: dict[tuple[str, str], int] = {}
+
+    def nid(key: tuple[str, str]) -> int:
+        if key not in node_ids:
+            node_ids[key] = len(node_ids) + 1
+        return node_ids[key]
+
+    family_preview = enrich.family_preview(
+        {
+            "lemma": head["lemma"],
+            "pos": head["pos"],
+            "gloss": head["gloss"],
+            "lemma_id": nid((head["lemma"], head["pos"])),
+        },
+        [
+            {
+                "lemma_id": nid((m["lemma"], m["pos"])),
+                "lemma": m["lemma"],
+                "pos": m["pos"],
+                "gloss": m["gloss"],
+                "relation": m["relation"],
+                "relation_label": _relation_label(m["relation"], head["lemma"]),
+                "freq": _member_freq(m),
+                "is_head": m["is_head"],
+                "relation_priority": coarse_priority(m["relation"]),
+            }
+            for m in family["members"]
+        ],
+        nid((entry["lemma"], entry["pos"])),
+        entry["form"],
+        entry["pos"],
+        entry["gloss"],
+        len(family["members"]),
+    )
+
     return {
+        "query": entry["form"],
         "selected": {
             "id": entry["id"],
             "form": entry["form"],
@@ -348,6 +419,8 @@ def analyze(entry_id: str) -> dict | None:
             "pos": entry["pos"],
             "gloss": entry["gloss"],
             "features": list(entry["features"]),
+            "audio": None,  # Phase 2 (Spanish-edition sounds import)
+            "ipa": None,    # Phase 2
         },
         "family": {
             "head": {"lemma": head["lemma"], "pos": head["pos"], "gloss": head["gloss"]},
@@ -357,7 +430,45 @@ def analyze(entry_id: str) -> dict | None:
         "tree": _tree_view(family, entry),
         "ancestry": _ancestry_view(family, entry),
         "cousins": family.get("cousins"),
+        "morphology": morphology,
+        "familyPreview": family_preview,
+        "origin": enrich.origin_view(_ancestry_view(family, entry)),
+        "nearbyForms": enrich.nearby_forms(
+            entry["pos"], entry["features"],
+            [
+                {
+                    "form": f["form"],
+                    "features": list(f["features"]),
+                    "is_clitic": False,
+                    "is_lemma": bool(f["is_lemma"]),
+                }
+                for f in member["forms"]
+            ],
+        ),
+        "englishRelatives": None,  # Phase 3 (English kaikki edition)
+        "mnemonics": None,         # Phase 4
     }
+
+
+def _fixture_alternatives(entry: dict) -> list[dict]:
+    """Ranked alternative analyses of the same surface form under other
+    lemmas (design.md §16: "Other possible analysis (1)")."""
+    data = _load()
+    per_lemma: dict[tuple[str, str], list] = {}
+    for e in data["entries"]:
+        if e["folded"] == entry["folded"] and (e["lemma"], e["pos"]) != (entry["lemma"], entry["pos"]):
+            per_lemma.setdefault((e["lemma"], e["pos"]), []).append(e)
+    ranked = []
+    for (lemma, pos), group in per_lemma.items():
+        best = max(group, key=lambda e: (e["freq"], e["id"]))
+        ranked.append((best["freq"], {
+            "lemma": lemma,
+            "pos": pos,
+            "summary": enrich.spanish_summary(pos, best["features"]),
+            "entry_id": best["id"],
+        }))
+    ranked.sort(key=lambda item: (-item[0], item[1]["lemma"]))
+    return [item[1] for item in ranked]
 
 
 def health() -> dict:

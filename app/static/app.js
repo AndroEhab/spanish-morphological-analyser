@@ -8,8 +8,35 @@
   const listbox = document.getElementById("search-listbox");
   const statusEl = document.getElementById("search-status");
   const loadingEl = document.getElementById("loading");
-  const analysisEl = document.getElementById("analysis");
   const kbdHint = document.getElementById("kbd-hint");
+  const analyzeBtn = document.getElementById("analyze-btn");
+
+  /* dashboard (primary view) */
+  const dashboardEl = document.getElementById("dashboard");
+
+  /* Layer 3 (deep views) */
+  const layer3El = document.getElementById("layer3");
+  const layer3Body = document.getElementById("layer3-body");
+  const layer3Title = document.getElementById("layer3-title");
+  const layer3Back = document.getElementById("layer3-back");
+
+  /* subviews */
+  const favouritesView = document.getElementById("favourites-view");
+  const favouritesList = document.getElementById("favourites-list");
+  const favouritesEmpty = document.getElementById("favourites-empty");
+  const settingsView = document.getElementById("settings-view");
+  const errorView = document.getElementById("error-view");
+
+  /* header widgets */
+  const recentBtn = document.getElementById("recent-btn");
+  const recentPopover = document.getElementById("recent-popover");
+  const recentList = document.getElementById("recent-list");
+  const recentEmpty = document.getElementById("recent-empty");
+  const themeBtn = document.getElementById("theme-btn");
+
+  const RECENT_KEY = "sma.recent";
+  const FAV_KEY = "sma.favorites";
+  const THEME_KEY = "sma.theme";
 
   const SEARCH_LIMIT = 25;
   const DEBOUNCE_MS = 120;
@@ -18,6 +45,306 @@
   const SECTION_COLLAPSE = 12;   // POS groups with more lemmas start collapsed
   const CLITIC_PREVIEW = 12;     // clitic forms shown before the "show N clitic forms" toggle
   const BADGE_MIN_FORMS = 6;     // single-member groups show a count badge only past this many forms
+
+  /* ------------------------------------------------------------------
+     Dashboard vocabulary. Spanish display strings are a static closed
+     mapping (plan §A2/A9); empty states are the documented strings from
+     docs/DESIGN_IMPLEMENTATION_PLAN.md §C verbatim (design.md §35,
+     product spec §50–52).
+     ------------------------------------------------------------------ */
+
+  const POS_LABELS_ES = {
+    verb: "verbo",
+    noun: "sustantivo",
+    adj: "adjetivo",
+    adv: "adverbio",
+    name: "nombre propio",
+    phrase: "locución",
+    pron: "pronombre",
+    det: "determinante",
+    article: "artículo",
+    num: "numeral",
+    intj: "interjección",
+    prep: "preposición",
+    conj: "conjunción",
+    aux: "verbo auxiliar",
+    prefix: "prefijo",
+    suffix: "sufijo",
+    other: "palabra",
+  };
+
+  const EMPTY_ORIGIN = "No se dispone de un origen histórico fiable.";
+  const EMPTY_COGNATES = "No se han encontrado relaciones útiles con raíces en inglés.";
+  const EMPTY_FAMILY = "Todavía no hay una familia de palabras fiable para esta entrada.";
+  /* No documented mnemonic empty-state string exists in the specs; written in
+     the same voice as the §51 family string (plan B3: "the §35/§51 empty
+     states exist for exactly this") and translated like the other empty
+     states (the product UI is Spanish; design.md §35's English strings are
+     examples, not chrome). */
+  const EMPTY_MNEMONIC = "Todavía no hay una mnemotecnia fiable para esta entrada.";
+  const ERROR_UNKNOWN = "No hemos podido analizar con seguridad";
+
+  /* features (English, closed vocabulary from pipeline/tags.py humanize)
+     -> Spanish, for the morphology summary line. Both the sqlite
+     humanize output ("imperfect indicative, 1st plural") and the fixture's
+     hand-authored variant ("present indicative, first-person singular")
+     must parse. */
+  const FEATURE_ES = {
+    infinitive: "infinitivo",
+    gerund: "gerundio",
+    participle: "participio",
+    present: "presente",
+    preterite: "pretérito",
+    imperfect: "pretérito imperfecto",
+    future: "futuro",
+    conditional: "condicional",
+    past: "pasado",
+    perfect: "perfecto",
+    indicative: "modo indicativo",
+    subjunctive: "modo subjuntivo",
+    imperative: "imperativo",
+    "1st": "1ª persona",
+    "first-person": "1ª persona",
+    "2nd": "2ª persona",
+    "second-person": "2ª persona",
+    "3rd": "3ª persona",
+    "third-person": "3ª persona",
+    singular: "del singular",
+    plural: "del plural",
+    masculine: "masculino",
+    feminine: "femenino",
+    formal: "formal",
+    informal: "informal",
+    vos: "voseo",
+    "with-vos": "voseo",
+    "with-voseo": "voseo",
+    "with-tú": "con tú",
+    "-se": "(-se)",
+    negative: "negativo",
+    alternative: "alternativo",
+    archaic: "arcaico",
+    clitic: "con clítico",
+  };
+
+  const FEATURE_ABBREV = {
+    infinitive: "inf.",
+    gerund: "ger.",
+    participle: "part.",
+    present: "pres.",
+    preterite: "pret.",
+    imperfect: "impf.",
+    future: "fut.",
+    conditional: "cond.",
+    past: "pas.",
+    perfect: "perf.",
+    indicative: "ind.",
+    subjunctive: "subj.",
+    imperative: "imper.",
+    "1st": "1ª",
+    "first-person": "1ª",
+    "2nd": "2ª",
+    "second-person": "2ª",
+    "3rd": "3ª",
+    "third-person": "3ª",
+    singular: "sing.",
+    plural: "plur.",
+    masculine: "masc.",
+    feminine: "fem.",
+    formal: "form.",
+    informal: "inf.",
+    vos: "vos",
+    "with-tú": "tú",
+    "with-vos": "vos",
+    "with-voseo": "vos",
+    "-se": "-se",
+    negative: "neg.",
+    alternative: "alt.",
+    archaic: "arcaico",
+  };
+
+  /* language codes + the fixture's English lang_labels -> Spanish, for the
+     origin chain fallback (the backend `origin.stages` carries its own
+     Spanish labels). */
+  const LANG_LABELS_ES = {
+    es: "español",
+    la: "latín",
+    grc: "griego antiguo",
+    osp: "español antiguo",
+    os: "español antiguo",
+    roa: "romance",
+    fr: "francés",
+    it: "italiano",
+    pt: "portugués",
+    ca: "catalán",
+    en: "inglés",
+    de: "alemán",
+    ar: "árabe",
+    Spanish: "español",
+    Latin: "latín",
+    "Old Spanish": "español antiguo",
+    "Medieval Spanish": "español medieval",
+    French: "francés",
+    Italian: "italiano",
+    Portuguese: "portugués",
+    Catalan: "catalán",
+    English: "inglés",
+    German: "alemán",
+    Arabic: "árabe",
+    "Ancient Greek": "griego antiguo",
+    Greek: "griego",
+  };
+
+  function langLabelEs(lang, langLabel) {
+    if (langLabel && LANG_LABELS_ES[langLabel]) return LANG_LABELS_ES[langLabel];
+    if (lang && LANG_LABELS_ES[lang]) return LANG_LABELS_ES[lang];
+    return langLabel || lang || "";
+  }
+
+  function foldEs(text) {
+    const decomposed = String(text).normalize("NFKD").toLowerCase();
+    return decomposed.replace(/[\u0300-\u036f]/g, "");
+  }
+
+  /* Closed verbal-desinence inventory mirroring pipeline/paradigm.py
+     (fallback only — the backend `morphology` key supersedes it). */
+  const DESINENCES = [
+    "ando", "iendo", "yendo", "ado", "ido", "aba", "abas", "ábamos", "abais", "aban",
+    "ía", "ías", "íamos", "íais", "ían", "ara", "aras", "áramos", "arais", "aran",
+    "iera", "ieras", "iéramos", "ierais", "ieran", "ase", "ases", "ásemos", "aseis", "asen",
+    "iese", "ieses", "iésemos", "ieseis", "iesen", "are", "ares", "áremos", "areis", "aren",
+    "iere", "ieres", "iéremos", "iereis", "ieren", "aré", "arás", "ará", "aremos", "aréis", "arán",
+    "eré", "erás", "erá", "eremos", "eréis", "erán", "iré", "irás", "irá", "iremos", "iréis", "irán",
+    "aría", "arías", "aríamos", "aríais", "arían", "ería", "erías", "eríamos", "eríais", "erían",
+    "iría", "irías", "iríamos", "iríais", "irían", "aste", "asteis", "aron", "iste", "isteis", "ieron",
+    "é", "ó", "í", "ió", "a", "as", "amos", "áis", "an", "es", "e", "emos", "éis", "en",
+    "imos", "ís", "ad", "ed", "id", "o", "s", "to", "so", "cho", "ar", "er", "ir",
+  ].sort((a, b) => b.length - a.length);
+
+  function splitDesinence(form) {
+    const folded = foldEs(form);
+    for (const des of DESINENCES) {
+      const stemLen = folded.length - des.length;
+      if (folded.endsWith(des) && stemLen >= 3) {
+        return { lexeme: form.slice(0, stemLen), inflection: des };
+      }
+    }
+    return null;
+  }
+
+  /* Parse one humanized feature string into Spanish summary tokens.
+     Group order follows pipeline/tags.py: impersonal, tense, mood, person,
+     number, gender, formality, voseo, aspect, variant, extra, clitic.
+     Parts arrive space-joined ("imperfect indicative, 1st plural"), so each
+     comma-part is split into words before lookup. */
+  function featureTokensEs(feature) {
+    const parts = feature.split(",").map((p) => p.trim()).filter(Boolean);
+    const out = [];
+    let person = null;
+    let number = null;
+    for (const part of parts) {
+      for (const word of part.split(/\s+/)) {
+        const key = word.toLowerCase().replace(/^\(|\)$/g, "");
+        const es = FEATURE_ES[key];
+        if (es === undefined) continue;
+        if (key === "1st" || key === "first-person" || key === "2nd" || key === "second-person" ||
+            key === "3rd" || key === "third-person") {
+          person = es;
+        } else if (key === "singular" || key === "plural") {
+          number = es === "del singular" ? "singular" : "plural";
+        } else {
+          out.push(es);
+        }
+      }
+    }
+    if (person) out.push(number ? `${person} del ${number}` : person);
+    else if (number) out.push(`del ${number}`);
+    return out;
+  }
+
+  function summaryLineEs(posLabel, features) {
+    if (!features || !features.length) return posLabel;
+    const first = features[0];
+    const tokens = featureTokensEs(first);
+    // prefer the cleanest analysis (plan F12): skip junk analyses whose
+    // tokens are empty or contradictory (e.g. "present preterite ...")
+    let clean = tokens;
+    if (tokens.includes("presente") && tokens.includes("pretérito")) {
+      clean = tokens.filter((t) => t !== "pretérito");
+    }
+    return [posLabel].concat(clean).join(" \u00b7 ");
+  }
+
+  function featureAbbreviation(feature) {
+    /* multiple analyses join with " · " (fixture style); the caption shows
+       the first/cleanest one, the full string stays in the title */
+    const first = String(feature).split(" \u00b7 ")[0];
+    const parts = first.split(",").map((p) => p.trim()).filter(Boolean);
+    const tokens = [];
+    let person = null;
+    let number = null;
+    for (const part of parts) {
+      for (const word of part.split(/\s+/)) {
+        const key = word.toLowerCase().replace(/^\(|\)$/g, "");
+        const ab = FEATURE_ABBREV[key];
+        if (ab === undefined) continue;
+        if (key === "1st" || key === "first-person" || key === "2nd" || key === "second-person" ||
+            key === "3rd" || key === "third-person") {
+          person = ab;
+        } else if (key === "singular" || key === "plural") {
+          number = ab;
+        } else {
+          tokens.push(ab);
+        }
+      }
+    }
+    const head = tokens.join(" ");
+    if (person || number) {
+      const tail = [person, number].filter(Boolean).join(" ");
+      return head ? `${head} ${tail}` : tail;
+    }
+    return head || "\u2014";
+  }
+
+  function conjugationClassEs(lemma, pos) {
+    if (pos !== "verb" || !lemma) return null;
+    const folded = foldEs(lemma);
+    if (folded.endsWith("ar")) return "Primera (-ar)";
+    if (folded.endsWith("er")) return "Segunda (-er)";
+    if (folded.endsWith("ir")) return "Tercera (-ir)";
+    return null;
+  }
+
+  const MORPH_DESC = {
+    lexeme: "raíz o base léxica",
+    inflection: "desinencia flexiva",
+    base: "infinitivo",
+    baseOther: "forma de cita",
+    category: "palabra variable",
+    categoryOther: "clase de palabra",
+    conjugation: "patrón de conjugación del infinitivo",
+  };
+
+  function readJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function writeJson(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch {
+      return false; // storage unavailable (private mode): session-only behaviour
+    }
+  }
+
+  function storedWord(data) {
+    return data.selected ? data.selected.form : (data.query || "");
+  }
 
   let results = [];
   let active = -1;
@@ -107,12 +434,12 @@
   ];
   const VERB_SECTION_ORDER = ["nonfinite", "indicative", "subjunctive", "imperative", "clitics", "other"];
   const VERB_SECTION_LABELS = {
-    nonfinite: "Non-finite",
-    indicative: "Indicative",
-    subjunctive: "Subjunctive",
-    imperative: "Imperative",
-    clitics: "With clitics",
-    other: "Other",
+    nonfinite: "No personales",
+    indicative: "Indicativo",
+    subjunctive: "Subjuntivo",
+    imperative: "Imperativo",
+    clitics: "Con clíticos",
+    other: "Otros",
   };
 
   const NOUN_RULES = [
@@ -249,7 +576,7 @@
 
     const chip = document.createElement("span");
     chip.className = `pos-chip ${row.pos}`;
-    chip.textContent = row.pos;
+    chip.textContent = POS_LABELS_ES[row.pos] || row.pos;
     rowEl.append(chip);
 
     const gloss = document.createElement("span");
@@ -267,10 +594,10 @@
     listbox.replaceChildren();
     if (!items.length) {
       closeDropdown();
-      statusEl.textContent = "No matches";
+      statusEl.textContent = "Sin resultados";
       return;
     }
-    statusEl.textContent = items.length === 1 ? "1 result" : `${items.length} results`;
+    statusEl.textContent = items.length === 1 ? "1 resultado" : `${items.length} resultados`;
     for (let i = 0; i < items.length; i++) listbox.append(optionEl(items[i], i));
     openDropdown();
     // Keep a previously highlighted row if it survived the re-render,
@@ -297,7 +624,7 @@
       renderDropdown(Array.isArray(data.results) ? data.results : []);
     } catch (err) {
       if (err.name === "AbortError") return;
-      statusEl.textContent = "Search failed — is the server running?";
+      statusEl.textContent = "Error de búsqueda: ¿está el servidor en marcha?";
     }
   }
 
@@ -327,11 +654,14 @@
       }
     }
     if (e.key === "Enter") {
-      // No free-text submit: Enter only ever selects a highlighted row.
-      // Selection works even if the dropdown was closed in the meantime
-      // (e.g. transient blur), so a highlighted choice is never lost.
+      // Highlighted row wins when the dropdown is open (combobox contract);
+      // otherwise Enter resolves the typed string to the top-ranked match.
       e.preventDefault();
-      if (active >= 0 && results[active]) selectResult(active);
+      if (!listbox.hidden && results.length && active >= 0 && results[active]) {
+        selectResult(active);
+      } else {
+        resolveFreeText(input.value);
+      }
     } else if (e.key === "Escape") {
       e.preventDefault();
       closeDropdown();
@@ -351,6 +681,24 @@
   document.addEventListener("click", (e) => {
     if (!listbox.hidden && !listbox.contains(e.target) && e.target !== input) {
       closeDropdown();
+    }
+  });
+
+  /* "Analizar" button = free-text submit: resolve the typed string to the
+     top-ranked match (design.md §7, plan F4 — owner sign-off). */
+  analyzeBtn.addEventListener("click", () => {
+    closeDropdown();
+    resolveFreeText(input.value);
+  });
+
+  /* `/` or Ctrl/Cmd+K focuses the search field from anywhere (§41). */
+  document.addEventListener("keydown", (e) => {
+    const tag = document.activeElement && document.activeElement.tagName;
+    const inField = tag === "INPUT" || tag === "TEXTAREA";
+    if ((e.key === "/" && !inField) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k")) {
+      e.preventDefault();
+      input.focus();
+      input.select();
     }
   });
 
@@ -550,7 +898,7 @@
           const sfrag = document.createDocumentFragment();
           for (const it of slice) sfrag.append(chipEl(it.f));
           grid.append(sfrag);
-          const toggle = el("button", "show-all", `Show ${shown.length} clitic forms`);
+          const toggle = el("button", "show-all", `Mostrar ${shown.length} formas con clítico`);
           toggle.type = "button";
           toggle.addEventListener("click", () => {
             expandedClitics.add(key);
@@ -568,7 +916,7 @@
       }
 
       if (collapsedPreview) {
-        const toggle = el("button", "show-all", `Show all ${forms.length} forms`);
+        const toggle = el("button", "show-all", `Mostrar las ${forms.length} formas`);
         toggle.type = "button";
         toggle.addEventListener("click", () => {
           expandedMembers.add(key);
@@ -588,7 +936,7 @@
     const head = el("div", "member-head");
     head.append(el("h3", "member-lemma", member.lemma));
     if (member.is_head) {
-      head.append(el("span", "head-badge", "head"));
+      head.append(el("span", "head-badge", "cabeza"));
     } else if (member.relation_label && member.relation_label !== "root") {
       head.append(el("span", "relation-chip", member.relation_label));
     }
@@ -604,7 +952,7 @@
     section.setAttribute("aria-labelledby", `pos-head-${index}`);
 
     const heading = el("div", "pos-section-head");
-    const h2 = el("h2", null, group.pos_label);
+    const h2 = el("h2", null, POS_LABELS_ES[group.pos] || group.pos_label);
     h2.id = `pos-head-${index}`;
     heading.append(h2);
     // "1 lemma · 2 forms" is noise when the card right below shows those
@@ -630,7 +978,7 @@
     section.append(frag);
 
     if (many && !expanded) {
-      const toggle = el("button", "show-all", `Show all ${group.members.length} lemmas`);
+      const toggle = el("button", "show-all", `Mostrar los ${group.members.length} lemas`);
       toggle.type = "button";
       toggle.addEventListener("click", () => {
         expandedSections.add(group.pos);
@@ -650,7 +998,7 @@
   function viewToggle() {
     const wrap = el("div", "view-toggle");
     wrap.setAttribute("role", "group");
-    wrap.setAttribute("aria-label", "Analysis view");
+    wrap.setAttribute("aria-label", "Vista del análisis");
     const view = currentView();
     for (const v of ["map", "list"]) {
       const btn = el("button", "view-btn" + (view === v ? " active" : ""), v === "map" ? "Map" : "List");
@@ -742,7 +1090,7 @@
     const section = el("section", "cousins-strip");
     section.setAttribute("aria-label", "Etymological cousins");
     const etymon = cousins.shared_etymon || {};
-    const title = `Also from ${[etymon.lang_label, etymon.word].filter(Boolean).join(" ")}`;
+    const title = `También del ${[langLabelEs(etymon.lang, etymon.lang_label), etymon.word].filter(Boolean).join(" ")}`;
     section.append(el("h3", "cousins-title", title));
     if (cousins.note) section.append(el("p", "cousins-note", cousins.note));
     const chips = el("div", "cousins-chips");
@@ -787,7 +1135,7 @@
       input.value = row.form;
       await openAnalysis(row.id);
     } catch {
-      statusEl.textContent = "Search failed — is the server running?";
+      statusEl.textContent = "Error de búsqueda: ¿está el servidor en marcha?";
     }
   }
 
@@ -864,7 +1212,7 @@
       if (!visible.length) return svgEl("svg", { class: "map-svg", width: 240, height: 80, viewBox: "0 0 240 80" });
 
       function posChipWidth(pos) {
-        return Math.max(measureText((pos || "").toUpperCase(), 700, 10) + 20, 34);
+        return Math.max(measureText((POS_LABELS_ES[pos] || pos || "").toUpperCase(), 700, 10) + 20, 34);
       }
 
       /* node box widths from real text measurement (canvas), capped so a
@@ -917,7 +1265,7 @@
         role: "tree",
         width: svgW,
         height: svgH,
-        "aria-label": `Derivation family of ${root ? root.lemma : ""}: ${visible.length} of ${nodes.length} members shown; ${selectedLemma} is selected. Use arrow keys to move between words and Enter to open one.`,
+        "aria-label": `Familia de derivación de ${root ? root.lemma : ""}: se muestran ${visible.length} de ${nodes.length} miembros; ${selectedLemma} está seleccionado. Usa las flechas para moverte entre las palabras e Intro para abrir una.`,
         viewBox: `0 0 ${svgW} ${svgH}`,
       });
 
@@ -1054,7 +1402,7 @@
           svgEl(
             "title",
             {},
-            `${node.lemma} — ${node.gloss || "no gloss"}\u00b7 ${node.form_count ?? 0} form${node.form_count === 1 ? "" : "s"}`,
+            `${node.lemma} — ${node.gloss || "sin glosa"}\u00b7 ${node.form_count ?? 0} forma${node.form_count === 1 ? "" : "s"}`,
           ),
         );
         g.append(svgEl("rect", { class: "box", x, y, width: w, height: MAP_NODE_H, rx: 8 }));
@@ -1074,7 +1422,7 @@
         );
         const chip = svgEl("g", { class: "map-pos-chip " + (node.pos || "other") });
         chip.append(svgEl("rect", { x: x + w - chipW, y: y + 12, width: chipW, height: 20, rx: 10 }));
-        chip.append(svgEl("text", { x: x + w - chipW / 2, y: y + 26, "text-anchor": "middle" }, (node.pos || "").toUpperCase()));
+        chip.append(svgEl("text", { x: x + w - chipW / 2, y: y + 26, "text-anchor": "middle" }, (POS_LABELS_ES[node.pos] || node.pos || "").toUpperCase()));
         g.append(chip);
         svg.append(g);
       }
@@ -1102,7 +1450,7 @@
             class: "map-collapse-badge",
             role: "button",
             tabindex: "0",
-            "aria-label": `Expand ${count} hidden descendant${count === 1 ? "" : "s"} of ${node.lemma}`,
+            "aria-label": `Expandir ${count} descendiente${count === 1 ? "" : "s"} oculto${count === 1 ? "" : "s"} de ${node.lemma}`,
             "data-id": id,
           });
           badge.append(svgEl("circle", { cx: x, cy: y, r: 11 }));
@@ -1314,9 +1662,9 @@
     return wrap;
   }
 
-  function renderAnalysis(data) {
+  function renderListView(data, target) {
     const { selected, family } = data;
-    analysisEl.replaceChildren();
+    target.replaceChildren();
     expandedMembers.clear();
     expandedSections.clear();
     expandedClitics.clear();
@@ -1327,7 +1675,7 @@
     header.dataset.entryId = selected.id;
     header.append(el("h2", "entry-form", selected.form));
     const lemmaLine = el("p", "entry-lemma");
-    lemmaLine.append(el("span", "pos-chip " + selected.pos, selected.pos));
+    lemmaLine.append(el("span", "pos-chip " + selected.pos, POS_LABELS_ES[selected.pos] || selected.pos));
     if (selected.lemma !== selected.form) {
       lemmaLine.append(el("span", "entry-lemma-word", selected.lemma));
     }
@@ -1335,26 +1683,28 @@
     header.append(el("p", "entry-gloss", selected.gloss));
     if (selected.features && selected.features.length) {
       const list = el("ul", "entry-features");
-      for (const feat of selected.features) list.append(el("li", null, feat));
+      for (const feat of selected.features) {
+        list.append(el("li", null, featureTokensEs(feat).join(" \u00b7 ") || feat));
+      }
       header.append(list);
     }
-    analysisEl.append(header);
+    target.append(header);
 
     /* Map | List toggle — remembered in localStorage; the list stays the
        default until the map proves itself */
-    analysisEl.append(viewToggle());
+    target.append(viewToggle());
 
     /* the etymology ribbon sits above whichever family view is active; it
        needs at least two steps to be worth drawing */
     if (data.ancestry && data.ancestry.length >= 2) {
-      analysisEl.append(ancestryRibbonView(data.ancestry));
+      target.append(ancestryRibbonView(data.ancestry));
     }
 
     if (currentView() === "map") {
       if (data.tree && data.tree.nodes && data.tree.nodes.length) {
-        analysisEl.append(familyMapView(data.tree, selected.lemma, selected.pos));
+        target.append(familyMapView(data.tree, selected.lemma, selected.pos));
       } else {
-        analysisEl.append(el("p", "empty-note", "No derivation tree is available for this entry."));
+        target.append(el("p", "empty-note", "No hay un árbol de derivación disponible para esta entrada."));
       }
     } else {
       /* sticky mini-nav — skipped when there is only one POS group: a single
@@ -1363,9 +1713,9 @@
       const navButtons = [];
       if (family.groups.length > 1) {
         nav = el("nav", "pos-nav");
-        nav.setAttribute("aria-label", "Parts of speech");
+        nav.setAttribute("aria-label", "Categorías gramaticales");
         family.groups.forEach((group, i) => {
-          const btn = el("button", null, group.pos_label);
+          const btn = el("button", null, POS_LABELS_ES[group.pos] || group.pos_label);
           btn.type = "button";
           btn.addEventListener("click", () => {
             document.getElementById(`pos-${i}`).scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1373,19 +1723,19 @@
           nav.append(btn);
           navButtons.push(btn);
         });
-        analysisEl.append(nav);
+        target.append(nav);
       }
 
       /* pos sections */
       const sections = family.groups.map((group, i) => posSection(group, i));
-      for (const section of sections) analysisEl.append(section);
+      for (const section of sections) target.append(section);
 
-      analysisEl.hidden = false;
+      target.hidden = false;
 
       /* scrollspy: highlight the nav button of the section currently in view */
       if (nav) {
         const onScroll = () => {
-          const offset = nav.offsetHeight + 48;
+          const offset = nav.offsetHeight + 84;
           let current = 0;
           sections.forEach((section, i) => {
             if (section.getBoundingClientRect().top <= offset) current = i;
@@ -1399,42 +1749,1078 @@
       }
     }
 
-    if (family.note) analysisEl.append(el("p", "family-note", family.note));
+    if (family.note) target.append(el("p", "family-note", family.note));
 
     /* cousins are context, not family: clearly separated and visually
        secondary, and only when the backend found any */
-    if (data.cousins) analysisEl.append(cousinsView(data.cousins));
+    if (data.cousins) target.append(cousinsView(data.cousins));
 
-    analysisEl.hidden = false;
+    target.hidden = false;
   }
 
   async function openAnalysis(id) {
-    analysisEl.hidden = true;
     loadingEl.hidden = false;
     statusEl.textContent = "";
+    dashboardEl.hidden = true; // a new analysis starts: hide the stale dashboard
+    layer3El.hidden = true;
     // The SQLite store can briefly fail while the pipeline rebuilds the DB
     // in place; retry once before surfacing the error to the user.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const res = await fetch(`/api/analyze?id=${encodeURIComponent(id)}`);
         if (res.status === 404) {
-          statusEl.textContent = "That entry is no longer available.";
+          statusEl.textContent = "Esa entrada ya no está disponible.";
+          loadingEl.hidden = true;
           return;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         renderAnalysis(data);
-        window.scrollTo({ top: 0, behavior: "smooth" });
         return;
       } catch (err) {
         if (attempt === 0) {
           await new Promise((resolve) => setTimeout(resolve, 1500));
           continue;
         }
-        statusEl.textContent = "Analysis failed — is the server running?";
+        statusEl.textContent = "Error al analizar: ¿está el servidor en marcha?";
       } finally {
         loadingEl.hidden = true;
       }
     }
   }
+
+  /* ------------------------------------------------------------------
+     Dashboard (primary view). The six regions mirror design.md §4–11 and
+     the mockup: Análisis morfológico + Familia de palabras (row 1),
+     Origen | Cognados en inglés | Mnemotecnia (row 2), Otras formas del
+     verbo (row 3). Every card handles its empty state — the §C strings.
+     ------------------------------------------------------------------ */
+
+  const ICONS = {
+    landmark:
+      '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">' +
+      '<path d="M4 20.5 L20 20.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
+      '<path d="M5.5 20.5 L5.5 12 L4 13.5 L3 10.5 L12 4.5 L21 10.5 L20 13.5 L18.5 12 L18.5 20.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    globe:
+      '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">' +
+      '<circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor" stroke-width="1.7"/>' +
+      '<ellipse cx="12" cy="12" rx="3.6" ry="8.2" fill="none" stroke="currentColor" stroke-width="1.7"/>' +
+      '<line x1="4.2" y1="8.6" x2="19.8" y2="8.6" stroke="currentColor" stroke-width="1.7"/>' +
+      '<line x1="4.2" y1="15.4" x2="19.8" y2="15.4" stroke="currentColor" stroke-width="1.7"/></svg>',
+    bulb:
+      '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">' +
+      '<path d="M12 3.5 A 6.3 6.3 0 0 0 12 16 L12 20.5 M9.5 18.5 L14.5 18.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<line x1="10" y1="12" x2="11" y2="12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<line x1="13" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<line x1="12" y1="10" x2="12" y2="11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+    star:
+      '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">' +
+      '<path d="M12 4 L14.6 9.3 L20.5 10.2 L16.2 14.3 L17.3 20.1 L12 17.2 L6.7 20.1 L7.8 14.3 L3.5 10.2 L9.4 9.3 Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    chevronDown:
+      '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    chevronRight:
+      '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<polyline points="9 6 15 12 9 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    arrowDown:
+      '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">' +
+      '<line x1="12" y1="3" x2="12" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+      '<polyline points="6 13 12 19 18 13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  };
+
+  function iconEl(name, cls) {
+    const span = el("span", cls || "card-icon");
+    span.innerHTML = ICONS[name] || "";
+    return span;
+  }
+
+  function cardWithHead(id, eyebrow, body, iconName, actions) {
+    const card = el("article", "card");
+    card.id = id;
+    const head = el("div", "card-head");
+    if (iconName) head.append(iconEl(iconName));
+    head.append(el("h2", "card-eyebrow", eyebrow));
+    if (actions) head.append(actions);
+    card.append(head);
+    const bodyWrap = el("div", "card-body");
+    bodyWrap.append(body);
+    card.append(bodyWrap);
+    return card;
+  }
+
+  /* ---- favourites (product spec §48: default object is the lemma) ---- */
+
+  function readFavourites() {
+    return readJson(FAV_KEY, []);
+  }
+
+  function isFavourite(lemma) {
+    return readFavourites().some((f) => f.lemma === lemma);
+  }
+
+  function favouriteButton(selected) {
+    const lemma = (selected && (selected.lemma || selected.form)) || "";
+    const btn = el("button", "fav-btn" + (isFavourite(lemma) ? " active" : ""));
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(isFavourite(lemma)));
+    btn.title = "Guardar en favoritos";
+    btn.setAttribute("aria-label", `Guardar ${lemma} en favoritos o quitarlo`);
+    btn.innerHTML = ICONS.star;
+    btn.addEventListener("click", () => {
+      toggleFavourite(selected);
+      btn.classList.toggle("active", isFavourite(lemma));
+      btn.setAttribute("aria-pressed", String(isFavourite(lemma)));
+    });
+    return btn;
+  }
+
+  function toggleFavourite(selected) {
+    const lemma = (selected && (selected.lemma || selected.form)) || "";
+    if (!lemma) return;
+    let list = readFavourites();
+    const idx = list.findIndex((f) => f.lemma === lemma);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      list.unshift({
+        lemma,
+        pos: selected.pos || "",
+        form: selected.form || "",
+        gloss: selected.gloss || "",
+        ts: Date.now(),
+      });
+      list = list.slice(0, 100);
+    }
+    writeJson(FAV_KEY, list);
+    renderFavourites();
+  }
+
+  function renderFavourites() {
+    const list = readFavourites();
+    favouritesList.replaceChildren();
+    favouritesEmpty.hidden = list.length > 0;
+    for (const f of list) {
+      const li = el("li", "favourite-card");
+      const main = el("div", "favourite-main");
+      const h = el("p", "favourite-lemma");
+      h.append(el("span", "lemma", f.lemma));
+      if (f.pos) h.append(el("span", "pos-chip " + f.pos, POS_LABELS_ES[f.pos] || f.pos));
+      if (f.form && f.form !== f.lemma) h.append(el("span", "form", f.form));
+      main.append(h);
+      if (f.gloss) main.append(el("p", "favourite-gloss", f.gloss));
+      li.append(main);
+      const actions = el("div", "favourite-actions");
+      const openBtn = el("button", "card-link", "Analizar");
+      openBtn.type = "button";
+      openBtn.addEventListener("click", () => analyzeByWord(f.lemma));
+      actions.append(openBtn);
+      const del = el("button", "card-link", "Quitar");
+      del.type = "button";
+      del.addEventListener("click", () => {
+        writeJson(FAV_KEY, readFavourites().filter((x) => x.lemma !== f.lemma));
+        renderFavourites();
+      });
+      actions.append(del);
+      li.append(actions);
+      favouritesList.append(li);
+    }
+  }
+
+  /* ---- recent results (product spec §47, design.md §54) ---- */
+
+  function addRecent(item) {
+    const list = readJson(RECENT_KEY, []);
+    const filtered = list.filter((r) => r.word !== item.word);
+    filtered.unshift({ word: item.word, lemma: item.lemma || item.word });
+    writeJson(RECENT_KEY, filtered.slice(0, 10));
+    renderRecentPopover();
+  }
+
+  function renderRecentPopover() {
+    const list = readJson(RECENT_KEY, []);
+    recentList.replaceChildren();
+    recentEmpty.hidden = list.length > 0;
+    for (const r of list) {
+      const li = document.createElement("li");
+      const btn = el("button", "popover-word-btn", r.word);
+      btn.type = "button";
+      if (r.lemma && r.lemma !== r.word) btn.append(el("span", "popover-word-lemma", r.lemma));
+      btn.addEventListener("click", () => {
+        recentPopover.hidden = true;
+        recentBtn.setAttribute("aria-expanded", "false");
+        analyzeByWord(r.word);
+      });
+      li.append(btn);
+      recentList.append(li);
+    }
+  }
+
+  recentBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const show = recentPopover.hidden;
+    recentPopover.hidden = !show;
+    recentBtn.setAttribute("aria-expanded", String(show));
+    if (show) renderRecentPopover();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!recentPopover.hidden && !recentPopover.contains(e.target) && !recentBtn.contains(e.target)) {
+      recentPopover.hidden = true;
+      recentBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /* ---- theme (design.md §55; explicit toggle + prefers-color-scheme) ---- */
+
+  function currentTheme() {
+    return readJson(THEME_KEY, "system");
+  }
+
+  function effectiveTheme() {
+    const t = currentTheme();
+    if (t === "light" || t === "dark") return t;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  function applyTheme(t) {
+    document.documentElement.dataset.theme = t;
+    writeJson(THEME_KEY, t);
+    for (const radio of document.querySelectorAll('input[name="theme"]')) {
+      radio.checked = radio.value === t;
+    }
+    themeBtn.setAttribute("aria-label", t === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro");
+  }
+
+  themeBtn.addEventListener("click", () => {
+    applyTheme(effectiveTheme() === "dark" ? "light" : "dark");
+  });
+
+  for (const radio of document.querySelectorAll('input[name="theme"]')) {
+    radio.addEventListener("change", () => applyTheme(radio.value));
+  }
+
+  /* ---- morphology card ---- */
+
+  function morphologyBody(data) {
+    const selected = data.selected || {};
+    const morphology = data.morphology || null;
+    const isVerb = selected.pos === "verb";
+    const posLabel =
+      morphology && morphology.posLabel
+        ? morphology.posLabel
+        : POS_LABELS_ES[selected.pos] || selected.pos || "palabra";
+    const summary =
+      morphology && morphology.summary
+        ? morphology.summary
+        : summaryLineEs(posLabel, selected.features);
+    const split =
+      morphology && morphology.lexeme != null
+        ? { lexeme: morphology.lexeme, inflection: morphology.inflection }
+        : isVerb
+          ? splitDesinence(selected.form)
+          : null;
+    const conjugation =
+      morphology && morphology.conjugationClass
+        ? morphology.conjugationClass
+        : conjugationClassEs(selected.lemma, selected.pos);
+
+    const frag = document.createDocumentFragment();
+
+    const headRow = el("div", "morph-head-row");
+    const wordWrap = el("div");
+    wordWrap.append(el("h2", "entry-form", selected.form));
+    const summaryP = el("p", "morph-summary");
+    summaryP.textContent = summary;
+    wordWrap.append(summaryP);
+    if (selected.gloss) wordWrap.append(el("p", "entry-gloss", selected.gloss));
+    headRow.append(wordWrap);
+    frag.append(headRow);
+
+    /* ambiguity (§16 / product §15): most likely analysis + collapsible
+       alternatives, never a flat list */
+    const alternatives = (morphology && morphology.alternatives) || [];
+    if (alternatives.length) {
+      const amb = el("div", "ambiguity");
+      amb.append(el("p", "ambiguity-main", "Análisis más probable"));
+      const toggle = el("button", "ambiguity-toggle", `Otras interpretaciones posibles (${alternatives.length})`);
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", "false");
+      const list = el("ul", "ambiguity-list");
+      list.hidden = true;
+      for (const alt of alternatives) {
+        const li = document.createElement("li");
+        const btn = el("button", "ambiguity-alt");
+        btn.type = "button";
+        btn.append(el("span", "lemma", alt.lemma || ""));
+        if (alt.pos) btn.append(el("span", "pos-chip " + alt.pos, POS_LABELS_ES[alt.pos] || alt.pos));
+        if (alt.summary) btn.append(el("span", "morph-desc", alt.summary));
+        btn.addEventListener("click", () => {
+          if (alt.entry_id) openAnalysis(alt.entry_id);
+        });
+        li.append(btn);
+        list.append(li);
+      }
+      toggle.addEventListener("click", () => {
+        list.hidden = !list.hidden;
+        toggle.setAttribute("aria-expanded", String(!list.hidden));
+      });
+      amb.append(toggle, list);
+      frag.append(amb);
+    }
+
+    /* field table: Lexema / Morfema flexivo / Base / Categoría / Conjugación
+       (verbs); §12 says not to force the verb schema onto other word types.
+       The Morfema flexivo explanation comes from the backend's own
+       decomposition label ("desinencia de pretérito imperfecto, 1ª persona
+       del plural" — the mockup's third column) when present, else the
+       generic one. */
+    const desinenceDesc =
+      morphology && Array.isArray(morphology.decomposition)
+        ? (morphology.decomposition.find((d) => d.kind === "desinence") || {}).label
+        : null;
+    const table = el("table", "morph-table");
+    table.setAttribute("aria-label", "Campos morfológicos");
+    const tbody = el("tbody");
+    function addRow(label, value, desc) {
+      const tr = el("tr");
+      tr.append(el("td", "morph-label", label));
+      const td = el("td", "morph-value");
+      if (value == null || value === "") {
+        td.append(el("span", "empty", "\u2014"));
+      } else {
+        td.textContent = value;
+      }
+      tr.append(td);
+      tr.append(el("td", "morph-desc", desc));
+      tbody.append(tr);
+    }
+    if (isVerb) {
+      addRow("Lexema", split ? split.lexeme : null, MORPH_DESC.lexeme);
+      addRow("Morfema flexivo", split ? split.inflection : null, desinenceDesc || MORPH_DESC.inflection);
+      addRow("Base", selected.lemma, MORPH_DESC.base);
+      addRow("Categoría", posLabel, MORPH_DESC.category);
+      addRow("Conjugación", conjugation, MORPH_DESC.conjugation);
+    } else {
+      addRow("Base", selected.lemma, MORPH_DESC.baseOther);
+      addRow("Categoría", posLabel, MORPH_DESC.categoryOther);
+    }
+    table.append(tbody);
+    frag.append(table);
+
+    /* decomposition accordion (§15 / plan B1: 2-way split; the backend
+       `morphology.decomposition` supersedes the fallback) */
+    let segments =
+      morphology && Array.isArray(morphology.decomposition) && morphology.decomposition.length
+        ? morphology.decomposition
+        : [];
+    if (!segments.length && split) {
+      segments = [
+        { segment: split.lexeme, label: "raíz o base léxica", kind: "stem" },
+        { segment: split.inflection, label: "desinencia flexiva", kind: "desinence" },
+      ];
+    }
+    if (segments.length) {
+      const decompose = el("div", "decompose-wrap");
+      const toggle = el("button", "decompose-toggle", "Ver descomposición morfológica");
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", "false");
+      const chev = el("span", "chevron");
+      chev.innerHTML = ICONS.chevronDown;
+      toggle.append(chev);
+      const body = el("div", "decompose-body");
+      body.hidden = true;
+      body.append(el("p", "decompose-word", selected.form));
+      const chips = el("div", "decompose-chips");
+      segments.forEach((seg, i) => {
+        if (i > 0) chips.append(el("span", "decompose-plus", "+"));
+        const chip = el("div", "decompose-chip");
+        chip.append(el("span", "seg kind-" + (seg.kind || "stem"), seg.segment));
+        chip.append(el("span", "seg-label", seg.label || ""));
+        chips.append(chip);
+      });
+      body.append(chips);
+      toggle.addEventListener("click", () => {
+        const opening = body.hidden;
+        body.hidden = !opening;
+        toggle.setAttribute("aria-expanded", String(opening));
+        decompose.classList.toggle("open", opening);
+      });
+      decompose.append(toggle, body);
+      frag.append(decompose);
+    }
+
+    return frag;
+  }
+
+  function morphologyCard(data) {
+    const card = el("article", "card");
+    card.id = "region-morphology";
+    const head = el("div", "card-head");
+    head.append(el("h2", "card-eyebrow", "ANÁLISIS MORFOLÓGICO"));
+    const actions = el("div", "card-actions");
+    actions.append(favouriteButton(data.selected || {}));
+    head.append(actions);
+    card.append(head);
+    card.append(morphologyBody(data));
+    return card;
+  }
+
+  /* ---- family radial (design.md §17–19, product spec §17–21) ---- */
+
+  function familyPreviewData(data) {
+    const selected = data.selected || {};
+    const fp = data.familyPreview;
+    if (fp && fp.hub) {
+      /* the backend includes the hub itself as the first node and can emit
+         two entries for one surface (hecho noun + hecho adj); satellites
+         are the distinct remaining lemmas, capped at 10 (design.md §17) */
+      const seen = new Set();
+      const nodes = [];
+      for (const n of fp.nodes || []) {
+        if (!n.lemma || n.lemma === fp.hub || seen.has(n.lemma)) continue;
+        seen.add(n.lemma);
+        nodes.push({
+          lemma: n.lemma,
+          pos: n.pos,
+          relationLabel: n.relationLabel || "",
+          gloss: n.gloss || "",
+          isSelected: !!n.isSelected,
+        });
+        if (nodes.length >= 10) break;
+      }
+      return { hub: fp.hub, total: fp.totalCount != null ? fp.totalCount : 1, nodes };
+    }
+    /* fallback: derive from family.groups + tree (same ranking idea as
+       plan F11: relation type, then freq, then POS diversity) */
+    const family = data.family;
+    if (!family || !family.groups) return null;
+    const members = [];
+    const seen = new Set();
+    for (const group of family.groups) {
+      for (const m of group.members) {
+        const key = `${m.lemma}\u0000${group.pos}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        members.push({
+          lemma: m.lemma,
+          pos: group.pos,
+          relationLabel: m.relation_label || "",
+          gloss: m.gloss || "",
+          isHead: !!m.is_head,
+          relation: m.relation || "",
+        });
+      }
+    }
+    const hub =
+      (family.head && family.head.lemma) ||
+      ((members.find((m) => m.isHead) || {}).lemma) ||
+      (members[0] ? members[0].lemma : "") ||
+      "";
+    const nodeFreq = new Map();
+    if (data.tree && data.tree.nodes) {
+      for (const n of data.tree.nodes) nodeFreq.set(`${n.lemma}\u0000${n.pos || ""}`, n.freq || 0);
+    }
+    const relPriority = (r) => {
+      if (!r || r === "root") return 0;
+      if (/^(prefix|suffix|participle)/.test(r)) return 1;
+      if (/^same paradigm/.test(r)) return 3;
+      return 2;
+    };
+    const rest = members.filter((m) => !m.isHead && m.lemma !== hub);
+    rest.sort(
+      (a, b) =>
+        relPriority(a.relation) - relPriority(b.relation) ||
+        (nodeFreq.get(`${b.lemma}\u0000${b.pos}`) || 0) - (nodeFreq.get(`${a.lemma}\u0000${a.pos}`) || 0) ||
+        (a.lemma < b.lemma ? -1 : 1),
+    );
+    /* one pill per lemma: the same surface can hold several entries
+       (hecho noun + hecho adj) and the radial shows words, not rows */
+    const byLemma = new Map();
+    for (const m of rest) {
+      if (!byLemma.has(m.lemma)) byLemma.set(m.lemma, m);
+    }
+    const distinct = [...byLemma.values()];
+    let nodes = distinct.slice(0, 9);
+    const selectedKey = `${selected.lemma}\u0000${selected.pos || ""}`;
+    if (selected.lemma && selected.lemma !== hub) {
+      const inList = nodes.some((n) => n.lemma === selected.lemma);
+      if (!inList) {
+        const target = distinct.find((n) => n.lemma === selected.lemma);
+        if (target) {
+          nodes = nodes.filter((n) => n.lemma !== target.lemma);
+          nodes = [target].concat(nodes.slice(0, 8));
+        }
+      }
+    }
+    nodes = nodes.map((n) => ({
+      lemma: n.lemma,
+      pos: n.pos,
+      relationLabel: n.relationLabel,
+      gloss: n.gloss,
+      isSelected: !!selected.lemma && n.lemma === selected.lemma,
+    }));
+    return { hub, total: byLemma.size + 1, nodes };
+  }
+
+  function showNodePopover(node, hub, wrap) {
+    const old = wrap.querySelector(".node-popover");
+    if (old) old.remove();
+    const pop = el("div", "node-popover");
+    pop.setAttribute("role", "group");
+    pop.setAttribute("aria-label", `Relación de ${node.lemma} con ${hub}`);
+    const head = el("p", "node-popover-head", node.lemma);
+    if (node.relationLabel && node.relationLabel !== "root") {
+      head.append(el("span", "rel", node.relationLabel));
+    }
+    pop.append(head);
+    if (node.gloss) pop.append(el("p", "node-popover-gloss", node.gloss));
+    const actions = el("div", "node-popover-actions");
+    const analyze = el("button", "card-link", `Analizar ${node.lemma}`);
+    analyze.type = "button";
+    analyze.addEventListener("click", () => analyzeByWord(node.lemma));
+    actions.append(analyze);
+    const close = el("button", "card-link", "Cerrar");
+    close.type = "button";
+    close.addEventListener("click", () => pop.remove());
+    actions.append(close);
+    pop.append(actions);
+    wrap.append(pop);
+    analyze.focus();
+  }
+
+  function radialFamilyView(data) {
+    const preview = familyPreviewData(data);
+    const wrap = el("div", "radial-wrap");
+    if (!preview || !preview.hub) {
+      wrap.append(el("p", "radial-empty", EMPTY_FAMILY));
+      return wrap;
+    }
+    const nodes = preview.nodes || [];
+    const hubText = preview.hub;
+    const hubW = Math.max(measureText(hubText, 700, 21) + 44, 124);
+    const hubH = 48;
+    const pillH = 32;
+    const pillW = nodes.map((n) => measureText(n.lemma, 600, 12.5) + 28);
+    const maxPillW = Math.max(20, ...pillW);
+    const count = nodes.length;
+    const radius = Math.max(116, hubW / 2 + maxPillW / 2 + 26, 124);
+    const padX = maxPillW / 2 + 20;
+    const padY = hubH / 2 + 12;
+    const W = Math.ceil((radius + padX) * 2);
+    const H = Math.ceil((radius + padY) * 2);
+    const cx = W / 2;
+    const cy = H / 2;
+
+    const names = nodes.map((n) => n.lemma).join(", ");
+    const svg = svgEl("svg", {
+      class: "radial-svg",
+      role: "img",
+      width: W,
+      height: H,
+      viewBox: `0 0 ${W} ${H}`,
+      "aria-label": `Familia de palabras de ${hubText}${nodes.length ? `: ${names}` : ""}.`,
+    });
+
+    /* connector lines first (drawn under the pills, like the mockup) */
+    nodes.forEach((n, i) => {
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(count, 1);
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      svg.append(svgEl("line", { class: "radial-edge", x1: cx, y1: cy, x2: x, y2: y }));
+    });
+
+    /* hub: solid accent pill */
+    const hub = svgEl("g", { class: "radial-hub" });
+    hub.append(svgEl("rect", { x: cx - hubW / 2, y: cy - hubH / 2, width: hubW, height: hubH, rx: hubH / 2 }));
+    hub.append(svgEl("text", { x: cx, y: cy + 8, "text-anchor": "middle" }, hubText));
+    svg.append(hub);
+
+    /* satellites: white pills, searched form highlighted */
+    nodes.forEach((n, i) => {
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(count, 1);
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      const w = pillW[i];
+      const g = svgEl("g", {
+        class: "radial-node" + (n.isSelected ? " is-selected" : ""),
+        role: "button",
+        tabindex: "0",
+        "aria-label": `${n.lemma}${n.relationLabel ? ` \u2014 ${n.relationLabel}` : ""}`,
+      });
+      g.append(svgEl("rect", { class: "pill", x: x - w / 2, y: y - pillH / 2, width: w, height: pillH, rx: pillH / 2 }));
+      g.append(svgEl("text", { class: "word", x, y: y + 5, "text-anchor": "middle" }, n.lemma));
+      g.addEventListener("click", () => showNodePopover(n, hubText, wrap));
+      g.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          showNodePopover(n, hubText, wrap);
+        } else if (e.key === "Escape") {
+          const pop = wrap.querySelector(".node-popover");
+          if (pop) pop.remove();
+        }
+      });
+      svg.append(g);
+    });
+
+    wrap.append(svg);
+    if (!count) wrap.append(el("p", "radial-empty", EMPTY_FAMILY));
+
+    const link = el("button", "card-link", "Ver toda la familia");
+    link.type = "button";
+    const chev = el("span", "chevron");
+    chev.innerHTML = ICONS.chevronRight;
+    link.append(chev);
+    link.addEventListener("click", () => openLayer3(data, "map"));
+    wrap.append(link);
+    return wrap;
+  }
+
+  function familyCard(data) {
+    const card = el("article", "card");
+    card.id = "region-family";
+    const head = el("div", "card-head");
+    head.append(el("h2", "card-eyebrow", "FAMILIA DE PALABRAS"));
+    const preview = familyPreviewData(data);
+    if (preview && preview.total != null) {
+      head.append(el("span", "count-badge", String(preview.total)));
+    }
+    card.append(head);
+    card.append(radialFamilyView(data));
+    return card;
+  }
+
+  /* ---- origin card (design.md §21–22, plan F6: real cited forms) ---- */
+
+  function arrowDownEl() {
+    const span = el("span", "arrow-ico");
+    span.innerHTML = ICONS.arrowDown;
+    return span;
+  }
+
+  function originView(data) {
+    const frag = document.createDocumentFragment();
+    const origin = data.origin;
+    const ancestry = Array.isArray(data.ancestry) ? data.ancestry : [];
+    let stages = null;
+    if (origin && Array.isArray(origin.stages) && origin.stages.length) {
+      stages = origin.stages.map((s) => ({
+        word: s.word,
+        lang: s.lang,
+        langLabel: s.langLabel || langLabelEs(s.lang, null),
+        mode: s.mode,
+        note: s.note,
+      }));
+    } else if (ancestry.length) {
+      stages = ancestry.map((s) => ({
+        word: s.word,
+        lang: s.lang,
+        langLabel: langLabelEs(s.lang, s.lang_label),
+        mode: s.mode,
+        note: s.note,
+      }));
+    }
+    if (!stages || stages.length < 2) {
+      frag.append(el("p", "empty-state", EMPTY_ORIGIN));
+      return frag;
+    }
+    /* backend stages arrive newest-first ("oldest last" in the payload);
+       the card reads oldest -> newest like the mockup chain */
+    const ordered = stages.slice().reverse();
+    const oldest = ordered[0];
+    if (oldest.lang === "es") {
+      frag.append(el("p", "empty-state", EMPTY_ORIGIN));
+      return frag;
+    }
+    const sourceLang = origin && origin.sourceLanguage ? origin.sourceLanguage : langLabelEs(oldest.lang, oldest.langLabel);
+    frag.append(el("p", "origin-lead", `Del ${sourceLang}`));
+    frag.append(el("p", "origin-source-word", origin && origin.sourceWord ? origin.sourceWord : oldest.word));
+    if (origin && origin.sourceMeaning) {
+      frag.append(el("p", "origin-source-meaning", origin.sourceMeaning));
+    }
+    const chain = el("div", "origin-chain");
+    ordered.forEach((s, i) => {
+      const stage = el("div", "origin-stage");
+      stage.append(el("span", "word", s.word));
+      if (s.langLabel) stage.append(el("span", "lang", s.langLabel));
+      if (s.note) stage.append(el("span", "note", `(${s.note})`));
+      chain.append(stage);
+      if (i < ordered.length - 1) {
+        /* plain ↓ between stages (mockup style); the derivation modes live
+           in the Layer-3 ribbon legend, not as English labels here */
+        const arrow = el("div", "origin-arrow");
+        arrow.append(arrowDownEl());
+        chain.append(arrow);
+      }
+    });
+    frag.append(chain);
+    const link = el("button", "card-link", "Ver evolución histórica");
+    link.type = "button";
+    const chev = el("span", "chevron");
+    chev.innerHTML = ICONS.chevronDown;
+    link.append(chev);
+    link.addEventListener("click", () => openEtymologyLayer3(data));
+    frag.append(link);
+    return frag;
+  }
+
+  /* ---- cognates (Phase 3 data; §52 empty state before) ---- */
+
+  function cognatesView(data) {
+    const frag = document.createDocumentFragment();
+    const rel = data.englishRelatives;
+    if (!rel || !Array.isArray(rel.items) || !rel.items.length) {
+      frag.append(el("p", "empty-state", EMPTY_COGNATES));
+      return frag;
+    }
+    const intro = el("p", "origin-lead", `Palabras en inglés emparentadas con el latín ${rel.sharedRoot || ""}.`);
+    frag.append(intro);
+    const list = el("ul", "cognate-list");
+    for (const it of rel.items) {
+      const li = document.createElement("li");
+      li.className = "cognate-item";
+      li.append(el("span", "cognate-word", it.word));
+      if (it.gloss) li.append(el("span", "cognate-gloss", it.gloss));
+      if (it.explanation) li.title = it.explanation;
+      list.append(li);
+    }
+    frag.append(list);
+    return frag;
+  }
+
+  /* ---- mnemonic (Phase 4 data; honest empty state before, per §35/§51) ---- */
+
+  function mnemonicsView(data) {
+    const frag = document.createDocumentFragment();
+    const m = data.mnemonics;
+    if (!m || !m.length || !m[0].text) {
+      frag.append(el("p", "empty-state", EMPTY_MNEMONIC));
+      return frag;
+    }
+    frag.append(el("p", "mnemonic-text", m[0].text));
+    return frag;
+  }
+
+  /* ---- other forms strip (design.md §28–29, product spec §38–40) ---- */
+
+  function nearbyFormsData(data) {
+    if (Array.isArray(data.nearbyForms) && data.nearbyForms.length) {
+      return data.nearbyForms.map((f) => ({
+        form: f.form,
+        features: typeof f.features === "string" ? f.features : (f.features || []).join(" \u00b7 "),
+        isLemma: !!f.isLemma,
+      }));
+    }
+    const selected = data.selected || {};
+    if (selected.pos !== "verb") return [];
+    const family = data.family;
+    if (!family || !family.groups) return [];
+    let member = null;
+    for (const group of family.groups) {
+      if (group.pos !== selected.pos) continue;
+      member = group.members.find((m) => m.lemma === selected.lemma) || null;
+      if (member) break;
+    }
+    if (!member || !Array.isArray(member.forms)) return [];
+    const forms = member.forms;
+    const present = forms.filter((f) => /present/i.test(f.features) && /indicative/i.test(f.features));
+    const pickedList = present.length ? present.slice() : forms.slice();
+    const personRank = (feat) => {
+      /* rank the present-indicative analysis when present (a form like
+         "satisface" may list imperative first); else the first analysis */
+      const feats = String(feat).split(" \u00b7 ");
+      const chosen = feats.find((f) => /present/i.test(f) && /indicative/i.test(f)) || feats[0];
+      const f = chosen.toLowerCase();
+      let num = 0;
+      if (f.includes("first-person") || f.includes("1st")) num = 1;
+      else if (f.includes("second-person") || f.includes("2nd")) num = 2;
+      else if (f.includes("third-person") || f.includes("3rd")) num = 3;
+      return num + (f.includes("plural") ? 3 : 0);
+    };
+    pickedList.sort(
+      (a, b) =>
+        personRank(a.features) - personRank(b.features) ||
+        (a.form < b.form ? -1 : 1),
+    );
+    return pickedList.slice(0, 8).map((f) => ({
+      form: f.form,
+      features: typeof f.features === "string" ? f.features : (f.features || []).join(" \u00b7 "),
+      isLemma: !!f.is_lemma,
+    }));
+  }
+
+  function otherFormsView(data) {
+    const frag = document.createDocumentFragment();
+    const forms = nearbyFormsData(data);
+    const selected = data.selected || {};
+    if (!forms.length) {
+      frag.append(
+        el(
+          "p",
+          "forms-empty",
+          selected.pos === "verb"
+            ? "No hay formas cercanas disponibles para este verbo."
+            : "Esta entrada no es un verbo: no hay formas conjugadas que mostrar.",
+        ),
+      );
+      return frag;
+    }
+    const body = el("div", "forms-card-body");
+    const strip = el("div", "forms-strip");
+    for (const f of forms) {
+      const item = el("div", "form-item");
+      item.append(el("span", "form-word" + (f.isLemma ? " is-lemma" : ""), f.form));
+      item.append(el("span", "form-feat", featureAbbreviation(f.features)));
+      strip.append(item);
+    }
+    body.append(strip);
+    const link = el("button", "card-link", "Ver conjugación completa");
+    link.type = "button";
+    const chev = el("span", "chevron");
+    chev.innerHTML = ICONS.chevronDown;
+    link.append(chev);
+    link.addEventListener("click", () => openLayer3(data, "list"));
+    body.append(link);
+    frag.append(body);
+    return frag;
+  }
+
+  /* ---- dashboard assembler ---- */
+
+  function renderDashboard(data) {
+    const frag = document.createDocumentFragment();
+    frag.append(morphologyCard(data));
+    frag.append(familyCard(data));
+    frag.append(cardWithHead("region-origin", "ORIGEN", originView(data), "landmark"));
+    frag.append(cardWithHead("region-cognates", "COGNADOS EN INGLÉS", cognatesView(data), "globe"));
+    frag.append(cardWithHead("region-mnemonics", "MNEMOTECNIA", mnemonicsView(data), "bulb"));
+    const formsCard = el("article", "card");
+    formsCard.id = "region-forms";
+    const fHead = el("div", "card-head");
+    fHead.append(el("h2", "card-eyebrow", "OTRAS FORMAS DEL VERBO"));
+    formsCard.append(fHead);
+    formsCard.append(otherFormsView(data));
+    frag.append(formsCard);
+    return frag;
+  }
+
+  let spyEnabled = true;
+
+  function updateSidebarSpy() {
+    if (!spyEnabled) return;
+    const ids = ["region-morphology", "region-family", "region-origin", "region-cognates", "region-mnemonics"];
+    let current = "region-morphology";
+    for (const id of ids) {
+      const r = document.getElementById(id);
+      if (!r || r.hidden) continue;
+      if (r.getBoundingClientRect().top <= 120) current = id;
+    }
+    for (const btn of document.querySelectorAll(".side-item")) {
+      btn.classList.toggle("active", btn.dataset.target === current);
+    }
+  }
+
+  window.addEventListener("scroll", updateSidebarSpy, { passive: true });
+
+  /* ---- Layer 3 deep views ---- */
+
+  function openLayer3(data, initialView) {
+    lastData = data;
+    try {
+      localStorage.setItem(VIEW_KEY, initialView);
+    } catch {
+      /* storage unavailable: the toggle still works for the session */
+    }
+    renderListView(data, layer3Body);
+    const selected = data.selected || {};
+    layer3Title.textContent =
+      initialView === "map"
+        ? `Familia completa de ${selected.lemma || ""}`
+        : `Conjugación y formas de ${selected.lemma || ""}`;
+    dashboardEl.hidden = true;
+    favouritesView.hidden = true;
+    settingsView.hidden = true;
+    errorView.hidden = true;
+    layer3El.hidden = false;
+    spyEnabled = false;
+    for (const btn of document.querySelectorAll(".side-item")) {
+      btn.classList.toggle("active", btn.dataset.target === "region-family");
+    }
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+
+  function openEtymologyLayer3(data) {
+    lastData = data;
+    const frag = document.createDocumentFragment();
+    if (data.ancestry && data.ancestry.length >= 1) {
+      frag.append(ancestryRibbonView(data.ancestry));
+    }
+    if (data.cousins) frag.append(cousinsView(data.cousins));
+    layer3Body.replaceChildren(frag);
+    const selected = data.selected || {};
+    layer3Title.textContent = `Evolución histórica de ${selected.lemma || ""}`;
+    dashboardEl.hidden = true;
+    favouritesView.hidden = true;
+    settingsView.hidden = true;
+    errorView.hidden = true;
+    layer3El.hidden = false;
+    spyEnabled = false;
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+
+  layer3Back.addEventListener("click", () => {
+    showDashboard();
+  });
+
+  /* ---- subviews (favourites / settings / error) ---- */
+
+  function showSubview(view) {
+    dashboardEl.hidden = true;
+    layer3El.hidden = true;
+    errorView.hidden = true;
+    favouritesView.hidden = view !== favouritesView;
+    settingsView.hidden = view !== settingsView;
+    spyEnabled = false;
+    const target = view === favouritesView ? "view-favourites" : "view-settings";
+    for (const btn of document.querySelectorAll(".side-item")) {
+      btn.classList.toggle("active", btn.dataset.target === target);
+    }
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+
+  function showErrorState(query) {
+    layer3El.hidden = true;
+    favouritesView.hidden = true;
+    settingsView.hidden = true;
+    dashboardEl.hidden = true;
+    errorView.hidden = false;
+    errorView.replaceChildren();
+    const box = el("div", "error-state");
+    box.append(el("h2", null, `${ERROR_UNKNOWN} \u201c${query}\u201d.`));
+    box.append(el("p", "subview-note", "Puedes probar:"));
+    const ul = el("ul");
+    ul.append(el("li", null, "comprobar la ortografía"));
+    ul.append(el("li", null, "buscar el lema"));
+    box.append(ul);
+    errorView.append(box);
+    spyEnabled = false;
+    for (const btn of document.querySelectorAll(".side-item")) {
+      btn.classList.toggle("active", btn.dataset.target === "region-morphology");
+    }
+  }
+
+  /* ---- sidebar navigation ---- */
+
+  for (const btn of document.querySelectorAll(".side-item")) {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.target;
+      if (target === "view-favourites") {
+        renderFavourites();
+        showSubview(favouritesView);
+      } else if (target === "view-settings") {
+        showSubview(settingsView);
+      } else {
+        const region = document.getElementById(target);
+        if (!region) return;
+        if (!lastData) {
+          /* no analysis yet: the regions do not exist, send the user to search */
+          input.focus();
+          return;
+        }
+        if (dashboardEl.hidden) showDashboard();
+        region.scrollIntoView({ behavior: "smooth", block: "start" });
+        region.setAttribute("tabindex", "-1");
+        region.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  /* ---- resolution: Enter / Analizar -> top-ranked match (plan §D + F4) ---- */
+
+  async function analyzeByWord(word) {
+    const query = String(word || "").trim();
+    if (!query) {
+      input.focus();
+      return;
+    }
+    closeDropdown();
+    input.value = query;
+    loadingEl.hidden = false;
+    statusEl.textContent = "";
+    dashboardEl.hidden = true;
+    layer3El.hidden = true;
+    /* 1) backend word resolution (`/api/analyze?word=`, plan §D) when the
+       backend has landed it; 404/422 falls through to search. */
+    try {
+      const res = await fetch(`/api/analyze?word=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        renderAnalysis(data);
+        loadingEl.hidden = true;
+        return;
+      }
+    } catch {
+      /* fall through to the search path */
+    }
+    /* 2) fallback: top-ranked search match -> analyze by id */
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=${SEARCH_LIMIT}`);
+      const data = await res.json();
+      const rows = Array.isArray(data.results) ? data.results : [];
+      if (!rows.length) {
+        showErrorState(query);
+        return;
+      }
+      await openAnalysis(rows[0].id);
+    } catch {
+      statusEl.textContent = "Error al analizar: ¿está el servidor en marcha?";
+    } finally {
+      loadingEl.hidden = true;
+    }
+  }
+
+  function resolveFreeText(text) {
+    analyzeByWord(text);
+  }
+
+  /* ---- primary analysis entry point ---- */
+
+  function showDashboard(data) {
+    layer3El.hidden = true;
+    favouritesView.hidden = true;
+    settingsView.hidden = true;
+    errorView.hidden = true;
+    dashboardEl.hidden = false;
+    dashboardEl.replaceChildren(renderDashboard(data || lastData));
+    spyEnabled = true;
+    updateSidebarSpy();
+  }
+
+  function renderAnalysis(data) {
+    lastData = data;
+    showDashboard(data);
+    const selected = data.selected || {};
+    if (selected.form) {
+      input.value = selected.form;
+      addRecent({ word: selected.form, lemma: selected.lemma || selected.form });
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /* ---- init: theme, deep links (design.md §75 / product spec §75) ---- */
+
+  function init() {
+    applyTheme(currentTheme());
+    renderRecentPopover();
+    renderFavourites();
+    const params = new URLSearchParams(window.location.search);
+    const word = params.get("word");
+    if (word && word.trim()) {
+      analyzeByWord(word.trim());
+    } else if (params.get("id")) {
+      openAnalysis(params.get("id"));
+    }
+  }
+
+  init();
 })();
+

@@ -1,40 +1,77 @@
-# Spanish Morphological Analyser
+# Analizador Morfológico del Español
 
-A web app for exploring Spanish morphology: type into a search box and pick a
-dictionary **word form** from the dropdown (there is no free-text submit —
-analysis is only ever triggered by selecting a concrete form). The analysis
-view shows the selected form's whole morphological/derivational family, grouped
-by part of speech, with each member lemma's paradigm rendered in labelled
-sections (Non-finite / Indicative / Subjunctive / Imperative / With clitics).
+A Spanish-language web app for exploring Spanish morphology. Type a word into
+the search box: the **combobox dropdown** offers tiered, frequency-ranked
+candidates to pick from, and **Enter / Analizar** resolves a typed string to
+its top-ranked analysis (exact form match, then citation form; ambiguous
+surfaces show the alternatives ranked). The result is a full dashboard — the
+product redesign documented in
+[`docs/DESIGN_IMPLEMENTATION_PLAN.md`](docs/DESIGN_IMPLEMENTATION_PLAN.md)
+(mockup: `design_UI.png`).
 
-## Screenshots
+![dashboard](scripts/screenshots/40-dashboard.png)
 
-![hacer family view](scripts/screenshots/10-real-hacer.png)
+![family radial](scripts/screenshots/43-radial-family.png)
 
-![mienta ambiguity dropdown](scripts/screenshots/11-real-mienta.png)
+![dark mode](scripts/screenshots/41-dashboard-dark.png)
 
-![paradigm sections](scripts/screenshots/13-paradigm-sections.png)
+![mobile](scripts/screenshots/42-dashboard-mobile.png)
+
+## The dashboard — six regions
+
+1. **Análisis morfológico** — the searched form, a Spanish grammatical
+   summary (`verbo · modo indicativo · pretérito imperfecto · 1ª persona del
+   plural`), the lexeme/morpheme split (`habl-` / `-ábamos`), base, categoría
+   and conjugación, a decomposition accordion, and ranked alternative
+   analyses for ambiguous forms.
+2. **Familia de palabras** — a radial preview: the family head as the hub
+   with up to 10 curated satellites (searched form highlighted), a node
+   click revealing the derivation relationship, and the real family size
+   badge. "Ver toda la familia" opens the full derivation map (Layer 3).
+3. **Origen** — the etymology chain with real cited forms, oldest last
+   (`hablar → fablar → fabulor → fābulārī`), from the `etymon` table.
+4. **Cognados en inglés** — English words sharing a Latin root (Phase 3;
+   currently the documented empty state).
+5. **Mnemotecnia** — memory aids built from real page relationships
+   (Phase 4; currently the documented empty state).
+6. **Otras formas del verbo** — the searched form's same-tense paradigm
+   strip; "Ver conjugación completa" opens the full POS-grouped paradigm
+   view (Layer 3).
+
+Plus: **Resultados recientes** and **Favoritos** (localStorage), a dark-mode
+theme toggle, deep links (`/?word=hablábamos`), and a fully keyboard- and
+screen-reader-accessible search combobox. The UI is entirely in Spanish, with
+no build step, no CDN and no webfonts — offline-capable.
+
+**Honest empty states.** About two thirds of words have no etymology, 59.5%
+of lemmas are singleton families, and English cognates, mnemonics and audio
+are documented **Phase 2–4 gaps** in the plan (the Spanish-edition import,
+the English-edition cognate join, and mnemonic generation). Where data is
+absent the cards render the documented empty states rather than invented
+content.
 
 ## What it does
 
-- **Search-by-form dropdown.** Matching is case- and accent-insensitive and
-  tiered: exact form match, then prefix, then (only when the prefix finds
-  nothing) substring. Within a tier, results sort by corpus frequency
-  descending (multi-word entries carry no frequency and sort last), then by
-  length, then alphabetically. Rows for the same surface form under
-  different lemmas stay adjacent and are disambiguated with a parenthesised
-  lemma qualifier — omitted when it would only repeat the surface form, the
-  POS chip and gloss already distinguishing those rows — plus the POS chip
-  and the gloss, so `hizo` finds `hizo`, and `mienta` shows both
-  `mienta (mentir)` and `mienta (mentar)`.
+- **Search-by-form dropdown + free-text resolution.** Matching is case- and
+  accent-insensitive and tiered: exact form match, then prefix, then (only
+  when the prefix finds nothing) substring. Within a tier, results sort by
+  corpus frequency descending (multi-word entries carry no frequency and
+  sort last), then by length, then alphabetically. Rows for the same surface
+  form under different lemmas stay adjacent and are disambiguated with a
+  parenthesised lemma qualifier — omitted when it would only repeat the
+  surface form, the POS chip and gloss already distinguishing those rows —
+  so `hizo` finds `hizo`, and `mienta` shows both `mienta (mentir)` and
+  `mienta (mentar)`. Selecting a dropdown row analyzes that concrete form;
+  pressing Enter or Analizar with the dropdown closed resolves the typed
+  string to the top-ranked match (with alternatives when ambiguous).
 - **Family analysis.** Each entry resolves to its family: a head lemma, a
   cutoff note when the family has one (explaining why membership ends where
   it does), and groups ordered Verbs → Nouns → Adjectives → Adverbs →
   everything else. Members show a relation chip (`des- + hacer`,
   `inherited from Latin facticius`, `same paradigm as hacer`, …), and their
   forms render as a dense chip grid bucketed into paradigm sections; long
-  lists collapse with "show all" toggles.
-- **Etymology & family map.** Three new layers show *how a word came to be*
+  lists collapse with "mostrar" toggles.
+- **Etymology & family map.** Three Layer-3 views, opened from the dashboard
   (built from the `etymon`/`derivation` tables the pipeline persists — the
   family membership cutoff itself is unchanged):
   - a **derivation map** of the family — the head at the root, every other
@@ -50,15 +87,16 @@ sections (Non-finite / Indicative / Subjunctive / Imperative / With clitics).
     prefix-stripped root (`objetar` and `proyectar` both strip to
     `iectāre`), capped at 60 descendants per shared etymon. Family members
     are never offered as cousins.
-  See `scripts/screenshots/30-map-hacer.png` (map), `32-ancestry-ribbon.png`
-  (ribbon) and `33-cousins.png` (cousins) for the real-data rendering.
   Coverage is data-bound: about a third of lemmas have any parsed ancestry
   at all, so roughly two thirds of words show no ribbon and no cousins
   strip — that is the source's coverage, not a bug.
 - **Backends.** The store is a thin dispatcher (`app/store.py`) with two
   implementations exposing the same contract: a hand-authored JSON fixture
   (`app/store_fixture.py`) and the real SQLite store (`app/store_sqlite.py`),
-  selected via `MORPH_BACKEND`.
+  selected via `MORPH_BACKEND`. The Phase-1 dashboard keys (`morphology`,
+  `familyPreview`, `origin`, `nearbyForms`, `englishRelatives`, `mnemonics`,
+  `query`) and the `word` parameter are additive and live in both backends —
+  the fixture doubles as the empty-state test harness.
 
 ## Source data
 
@@ -140,7 +178,8 @@ environment variable:
 API endpoints:
 
 - `GET /api/search?q=<partial>&limit=<n>` — word-form candidates
-- `GET /api/analyze?id=<id>` — family analysis for one entry
+- `GET /api/analyze?id=<id>` — full analysis for one entry (unchanged keys)
+- `GET /api/analyze?word=<word>` — resolve a typed string (deep links, Enter/Analizar)
 - `GET /api/health` — status + entry/lemma/family counts + active backend
 
 ## Tests
@@ -165,9 +204,12 @@ MORPH_BACKEND=sqlite .venv\Scripts\python scripts/ui_smoke.py   # real backend
 
 Drives the real UI with Playwright (headless Chromium; installed via
 `requirements-dev.txt` — run `python -m playwright install chromium` once),
-exercises the full flow —
-dropdown, keyboard selection, ambiguity, paradigm sections, clitic expansion,
-latency — and captures screenshots to `scripts/screenshots/`.
+exercises the full flow — combobox dropdown selection *and* free-text
+resolution, the six dashboard regions, the radial family hub, the origin
+chain, the documented empty states, the other-forms strip,
+recent/favourites persistence, deep links and the Layer-3 hand-offs — and
+captures screenshots to `scripts/screenshots/` (`40–46` are the
+mockup-comparable dashboard frames).
 
 ## Layout
 
@@ -176,6 +218,7 @@ app/
   main.py            # FastAPI app: mounts static/, defines API routes
   api.py             # route handlers under /api
   store.py           # backend dispatcher (MORPH_BACKEND)
+  enrich.py          # Phase-1 display enrichments (Spanish summaries, splits, previews)
   store_fixture.py   # fixture-backed store (JSON)
   store_sqlite.py    # SQLite store (production data)
   fixtures/sample.json
@@ -189,6 +232,11 @@ scripts/
 tests/
   conftest.py, test_api.py, test_pipeline.py, test_store_sqlite.py
 ```
+
+Design docs: `design.md` + `spanish_morphological_analyzer_product_structure.md`
+(the full specs), `design_UI.png` (the mockup), and
+`docs/DESIGN_IMPLEMENTATION_PLAN.md` (the Phase-1 implementation plan:
+API contract §D, missing-data behaviour contract §C, phasing §E).
 
 ## Data licensing & attribution
 

@@ -401,6 +401,13 @@ def _analyze_for(store, word: str, pos: str | None = None):
     return store.analyze(row["id"]), row
 
 
+def _analyze_form(store, form: str, lemma: str):
+    """Analyze one surface form under a given lemma (inflected forms)."""
+    rows = store.search(form, 25)
+    row = next(r for r in rows if r["form"] == form and r["lemma"] == lemma)
+    return store.analyze(row["id"]), row
+
+
 def test_analyze_tree_dfs_parent_before_child(store):
     data, _ = _analyze_for(store, "mentir")
     nodes = data["tree"]["nodes"]
@@ -559,3 +566,161 @@ def test_analyze_without_ancestry_tables_degrades(store, tmp_path, monkeypatch):
     assert data["ancestry"] == []
     assert data["cousins"] is None
     assert data["tree"]["nodes"][0]["lemma"] == "hacer"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 dashboard keys (frozen §D contract): query, morphology,
+# familyPreview, origin, nearbyForms, alternatives.
+# ---------------------------------------------------------------------------
+
+def test_analyze_morphology_split_and_summary(store):
+    data, _ = _analyze_for(store, "mentir")
+    assert data["query"] == "mentir"
+    m = data["morphology"]
+    assert m["summary"] == "verbo · no personal · infinitivo"
+    assert m["lexeme"] == "ment-"
+    assert m["inflection"] == "-ir"
+    assert m["base"] == "mentir"
+    assert m["categoría"] == "verbo"
+    assert m["conjugationClass"] == "Tercera (-ir)"
+    assert m["conjugación"] == "Tercera (-ir)"
+    assert m["decomposition"][0] == {"segment": "ment", "label": "raíz o base léxica", "kind": "stem"}
+    assert m["alternatives"] == []
+
+
+def test_analyze_morphology_accented_desinence_and_no_participle_overstrip(store):
+    # "miento" must split mient- + -o, NOT mien- + -to (the participle
+    # desinence is excluded by the present-indicative analysis); "hacía"
+    # must split hac- + -ía, NOT hací- + -a (the accented desinence matches)
+    data, _ = _analyze_form(store, "miento", "mentir")
+    m = data["morphology"]
+    assert m["lexeme"] == "mient-"
+    assert m["inflection"] == "-o"
+    assert m["summary"] == "verbo · modo indicativo · presente · 1ª persona del singular"
+    data2, _ = _analyze_form(store, "hacía", "hacer")
+    assert data2["morphology"]["lexeme"] == "hac-"
+    assert data2["morphology"]["inflection"] == "-ía"
+
+
+def test_analyze_morphology_clitic_form_splits_on_verified_base(store):
+    # clitics are stripped against the lemma's own form table first; the
+    # inflection shown is the base's (mentir + lo → ment- + -ir)
+    data, _ = _analyze_form(store, "mentirlo", "mentir")
+    assert data["morphology"]["lexeme"] == "ment-"
+    assert data["morphology"]["inflection"] == "-ir"
+    data2, _ = _analyze_form(store, "hacerlo", "hacer")
+    assert data2["morphology"]["lexeme"] == "hac-"
+    assert data2["morphology"]["inflection"] == "-er"
+
+
+def test_analyze_morphology_multiword_junk_is_null(store):
+    # F12: multi-word surfaces never reach the split; the empty state is a
+    # null lexeme and an empty decomposition
+    data, _ = _analyze_form(store, "hacer popó", "hacer popó")
+    m = data["morphology"]
+    assert m["lexeme"] is None and m["inflection"] is None
+    assert m["decomposition"] == []
+
+
+def test_analyze_morphology_noun_never_splits(store):
+    data, _ = _analyze_for(store, "mentira")
+    m = data["morphology"]
+    assert m["summary"] == "sustantivo · singular"
+    assert m["lexeme"] is None and m["inflection"] is None
+    assert m["conjugationClass"] is None
+    assert data["nearbyForms"] == []
+
+
+def test_analyze_alternatives_ranked(store):
+    data, _ = _analyze_form(store, "mienta", "mentir")
+    alts = data["morphology"]["alternatives"]
+    assert [a["lemma"] for a in alts] == ["mentar"]
+    alt = alts[0]
+    assert alt["pos"] == "verb"
+    assert alt["summary"] == "verbo · modo indicativo · presente · 3ª persona del singular"
+    assert store.analyze(alt["entry_id"]) is not None  # the chip navigates
+
+
+def test_analyze_family_preview_ranked_and_selected(store):
+    data, _ = _analyze_for(store, "mentir")
+    preview = data["familyPreview"]
+    assert preview["hub"] == "mentir"
+    assert preview["totalCount"] == 4  # the fixture family's real size
+    nodes = preview["nodes"]
+    assert nodes[0]["lemma"] == "mentir" and nodes[0]["relationLabel"] == "root"
+    assert nodes[0]["isSelected"] is True  # searched the head's citation
+    # relation-type priority: paradigm (mentiroso) before derived (mentira)
+    assert [n["lemma"] for n in nodes[1:]] == ["mentiroso", "mentira"]
+    assert sum(1 for n in nodes if n["isSelected"]) == 1
+    # searching an inflected form of the head adds a highlighted peripheral node
+    data2, _ = _analyze_form(store, "mienta", "mentir")
+    sel = [n for n in data2["familyPreview"]["nodes"] if n["isSelected"]]
+    assert len(sel) == 1 and sel[0]["lemma"] == "mienta"
+    # searching a non-head member marks that member in place
+    data3, _ = _analyze_for(store, "mentira")
+    sel3 = [n for n in data3["familyPreview"]["nodes"] if n["isSelected"]]
+    assert len(sel3) == 1 and sel3[0]["lemma"] == "mentira"
+
+
+def test_analyze_origin_stages_and_source(store):
+    data, _ = _analyze_for(store, "echar")
+    origin = data["origin"]
+    assert origin is not None
+    assert origin["sourceLanguage"] == "latín"
+    assert origin["sourceWord"] == "iactāre"  # deepest non-proto step
+    assert origin["sourceMeaning"] is None  # Phase 1: no Latin gloss source (docs F7)
+    # stages are newest-first per the frozen §D contract ("oldest last"):
+    # the Spanish word first, etymons backwards in time
+    words = [(s["word"], s["langLabel"]) for s in origin["stages"]]
+    assert words == [
+        ("echar", "español"),
+        ("iecto", "latín"),
+        ("iectāre", "latín"),
+        ("iacto", "latín"),
+        ("iactāre", "latín"),
+        ("h1yag", "protoindoeuropeo"),
+    ]
+    # the ancestry payload itself is unchanged (existing consumers)
+    assert data["ancestry"][0]["word"] == "echar"
+
+
+def test_analyze_origin_null_without_etymon(store):
+    data, _ = _analyze_for(store, "mentar", "verb")
+    assert data["origin"] is None
+    assert data["ancestry"] == []
+
+
+def test_analyze_nearby_forms_tense_row_and_cap(store):
+    # same-tense row: miento (present 1sg) → the present-indicative row;
+    # mienta is subjunctive and mentirlo is clitic, so neither qualifies
+    data, _ = _analyze_form(store, "miento", "mentir")
+    assert [(f["form"], f["features"]) for f in data["nearbyForms"]] == [
+        ("miento", "present indicative, 1st singular"),
+        ("mientes", "present indicative, 2nd singular"),
+    ]
+    assert all(f["isLemma"] is False for f in data["nearbyForms"])
+    # non-finite searches fall back to the present-indicative row
+    data2, _ = _analyze_for(store, "mentir")
+    assert [f["form"] for f in data2["nearbyForms"]] == ["miento", "mientes"]
+    # no verb → empty strip
+    data3, _ = _analyze_for(store, "mentira")
+    assert data3["nearbyForms"] == []
+
+
+def test_analyze_phase2_phase4_keys_null(store):
+    data, _ = _analyze_for(store, "mentir")
+    assert data["englishRelatives"] is None
+    assert data["mnemonics"] is None
+    assert data["selected"]["audio"] is None
+    assert data["selected"]["ipa"] is None
+
+
+def test_analyze_summary_gender_number_spanish(store):
+    # nouns/adjectives render gender and number in Spanish (the raw feature
+    # tokens "masculine"/"singular" must never surface in the Spanish UI)
+    data, _ = _analyze_for(store, "mentiroso")
+    assert data["morphology"]["summary"] == "adjetivo · masculino singular"
+    data2, _ = _analyze_form(store, "mentirosa", "mentiroso")
+    assert data2["morphology"]["summary"] == "adjetivo · femenino singular"
+    data3, _ = _analyze_form(store, "mentiras", "mentira")
+    assert data3["morphology"]["summary"] == "sustantivo · plural"

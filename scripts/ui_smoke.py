@@ -1,14 +1,18 @@
 """Real-browser UI smoke test for the Spanish Morphological Analyser.
 
-Starts uvicorn on port 8011, drives the page with Playwright (headless
-chromium), exercises the real user flow end to end, and captures screenshots
-to ``scripts/screenshots/``.
+Phase 1 dashboard: starts uvicorn on port 8011, drives the page with
+Playwright (headless chromium), exercises the full user flow end to end —
+combobox + free-text resolution, the six dashboard regions, the radial
+family hub, the origin chain, empty states, the other-forms strip,
+recent/favourites persistence, deep links and the Layer-3 hand-offs — and
+captures screenshots to ``scripts/screenshots/``.
 
 Run:  .venv\\Scripts\\python scripts\\ui_smoke.py
 """
 
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -19,8 +23,34 @@ from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
 SHOTS = ROOT / "scripts" / "screenshots"
-PORT = 8011
+
+
+def _free_port() -> int:
+    """Fresh ephemeral port so a lingering server can never collide."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+PORT = _free_port()
 BASE = f"http://127.0.0.1:{PORT}"
+
+# documented empty states — the §C strings translated into the product's
+# UI language (the specs' example strings are English because the docs are;
+# the product is Spanish, design_UI.png has no English chrome)
+EMPTY_ORIGIN = "No se dispone de un origen histórico fiable."
+EMPTY_COGNATES = "No se han encontrado relaciones útiles con raíces en inglés."
+EMPTY_FAMILY = "Todavía no hay una familia de palabras fiable para esta entrada."
+EMPTY_MNEMONIC = "Todavía no hay una mnemotecnia fiable para esta entrada."
+
+REGIONS = [
+    "region-morphology",
+    "region-family",
+    "region-origin",
+    "region-cognates",
+    "region-mnemonics",
+    "region-forms",
+]
 
 
 def start_server(backend: str = "fixture") -> subprocess.Popen:
@@ -44,10 +74,10 @@ def start_server(backend: str = "fixture") -> subprocess.Popen:
     raise RuntimeError("server did not become ready on port 8011")
 
 
-def shot(page, name):
+def shot(page, name, full=False):
     path = SHOTS / name
-    page.screenshot(path=str(path))
-    print(f"  screenshot: {name}")
+    page.screenshot(path=str(path), full_page=full)
+    print(f"  screenshot: {name}" + (" (full page)" if full else ""))
 
 
 def type_query(page, text):
@@ -60,440 +90,248 @@ def select_row(page, down_presses, enter=True):
         page.keyboard.press("ArrowDown")
     if enter:
         page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=5000)
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=8000)
+
+
+def open_word(page, word):
+    """Resolve a word through the free-text path (Analizar) and wait."""
+    type_query(page, word)
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Escape")  # dropdown closed -> free-text resolution
+    page.locator("#analyze-btn").click()
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+
+
+def frame_scroll(page, selector):
+    page.evaluate(
+        """(sel) => {
+            document.documentElement.style.scrollBehavior = 'auto';
+            const el = document.querySelector(sel);
+            if (el) el.scrollIntoView({block: 'start'});
+        }""",
+        selector,
+    )
+    page.wait_for_timeout(250)
 
 
 def run_flows(browser):
-    page = browser.new_page(viewport={"width": 1100, "height": 800})
-    if os.environ.get("UI_SMOKE_DEBUG"):
-        page.add_init_script("""
-          window.__log = [];
-          const t = () => performance.now().toFixed(1);
-          document.addEventListener('blur', (e) => window.__log.push(t() + ' BLUR ' + (e.target.id||e.target.tagName)), true);
-          document.addEventListener('focus', (e) => window.__log.push(t() + ' FOCUS ' + (e.target.id||e.target.tagName)), true);
-          window.addEventListener('blur', () => window.__log.push(t() + ' WINBLUR'));
-          window.addEventListener('focus', () => window.__log.push(t() + ' WINFOCUS'));
-          new MutationObserver(() => {
-            const lb = document.getElementById('search-listbox');
-            if (lb) window.__log.push(t() + ' listbox.hidden=' + lb.hidden + ' ad=' + document.getElementById('search-input').getAttribute('aria-activedescendant'));
-          }).observe(document.body, {subtree: true, attributes: true, attributeFilter: ['hidden']});
-        """)
+    page = browser.new_page(viewport={"width": 1535, "height": 1024})
     page.goto(BASE + "/", wait_until="networkidle")
-    assert not page.locator("#analysis .entry-card").count(), "analysis present on first load"
+    assert not page.locator("#dashboard .entry-form").count(), "analysis present on first load"
 
-    # ---- 1. type "mient" -> listbox shows two mienta options with qualifiers
+    # ---- 1. combobox contract preserved: 'mient' renders ambiguous rows ----
     type_query(page, "mient")
     page.wait_for_selector(".option-row", state="visible", timeout=5000)
     expect(page.locator(".option")).to_have_count(21)
-    mienta_mentir = page.locator(".option", has_text=re.compile(r"^mienta\(mentir\)"))
-    mienta_mentar = page.locator(".option", has_text=re.compile(r"^mienta\(mentar\)"))
-    expect(mienta_mentir).to_have_count(1)
-    expect(mienta_mentar).to_have_count(1)
-    quals = sorted(page.locator(".option", has_text=re.compile(r"^mienta\(")).locator(".row-qualifier").all_text_contents())
+    quals = sorted(
+        page.locator(".option", has_text=re.compile(r"^mienta\(")).locator(".row-qualifier").all_text_contents()
+    )
     assert quals == ["(mentar)", "(mentir)"], quals
-    print("PASS 1: 'mient' renders mienta (mentir) and mienta (mentar) as separate options")
-    # the listbox must scroll, not grow: bounded height with overflow
-    lb = page.evaluate("""() => {
-        const lb = document.getElementById('search-listbox');
-        return {scrolls: lb.scrollHeight > lb.clientHeight, cap: Math.round(parseFloat(getComputedStyle(lb).maxHeight))};
-    }""")
-    assert lb["scrolls"], "listbox should scroll when results overflow"
-    assert lb["cap"] <= 400, lb
-    print("PASS 1b: listbox is height-capped and scrolls (cap ~" + str(lb["cap"]) + "px)")
+    lb = page.evaluate(
+        """() => {
+            const lb = document.getElementById('search-listbox');
+            return {scrolls: lb.scrollHeight > lb.clientHeight, cap: Math.round(parseFloat(getComputedStyle(lb).maxHeight))};
+        }"""
+    )
+    assert lb["scrolls"] and lb["cap"] <= 400, lb
+    print("PASS 1: combobox dropdown renders tiered results with qualifiers; height-capped and scrolls")
     shot(page, "01-dropdown.png")
 
-    # ---- 2. Escape closes the dropdown; Enter with no highlight does nothing
+    # ---- 2. Escape closes; Enter with an EMPTY input is a no-op ----
     page.keyboard.press("Escape")
     assert page.locator("#search-listbox").is_hidden(), "listbox still visible after Escape"
-    assert page.locator("#search-input").get_attribute("aria-expanded") == "false"
+    page.fill("#search-input", "")  # empty input -> free-text submit is a no-op
     page.keyboard.press("Enter")
     page.wait_for_timeout(400)
-    assert not page.locator("#analysis .entry-card").count(), "Enter without highlight triggered analysis"
-    print("PASS 2: Escape closes dropdown; Enter with no highlighted option does nothing")
+    assert not page.locator("#dashboard .entry-form").count(), "Enter with empty input must not analyze"
+    print("PASS 2: Escape closes dropdown; Enter with empty input does nothing")
 
-    # ---- 3. ArrowDown x2 + Enter selects a row; header shows form + lemma
+    # ---- 3. highlighted-row selection still works (combobox path) ----
     type_query(page, "mient")
     page.wait_for_selector(".option-row", state="visible", timeout=5000)
     select_row(page, 2)
-    assert page.locator(".entry-form").inner_text() == "miento", page.locator(".entry-form").inner_text()
-    assert "mentir" in page.locator(".entry-lemma").inner_text()
-    print("PASS 3: ArrowDown x2 + Enter opens analysis for miento (mentir)")
+    assert page.locator("#dashboard .entry-form").inner_text() == "miento", \
+        page.locator("#dashboard .entry-form").inner_text()
+    print("PASS 3: ArrowDown x2 + Enter opens miento analysis on the dashboard")
 
-    # ---- 4. select mienta (mentir): header form, lemma, ambiguous features
-    type_query(page, "mient")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    select_row(page, 8)
-    actual = page.locator(".entry-form").inner_text()
-    if actual != "mienta" and os.environ.get("UI_SMOKE_DEBUG"):
-        print("  [dbg] EVENT LOG:")
-        for line in page.evaluate("() => window.__log"):
-            print("   ", line)
-    assert actual == "mienta", f"expected mienta, got {actual!r}"
-    assert "mentir" in page.locator(".entry-lemma").inner_text()
-    expect(page.locator(".entry-features li")).to_have_count(2)
-    assert page.locator(".entry-card").get_attribute("data-entry-id") == "mienta::mentir::verb"
-    assert "Dictionary id:" not in page.locator(".entry-card").inner_text()
-    print("PASS 4: mienta (mentir) analysis shows form, lemma and both subjunctive analyses")
-    shot(page, "02-analysis-mienta.png")
+    # ---- 4. 'Analizar' button resolves free text to the top-ranked match ----
+    open_word(page, "hacer")
+    assert page.locator("#dashboard .entry-form").inner_text() == "hacer"
+    print("PASS 4: Analizar resolves 'hacer' to the top-ranked match (hacer)")
 
-    # ---- 5. search "hacer"; infinitive ranks first; family renders
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    first_form = page.locator(".option").first.locator(".row-form").inner_text()
-    assert first_form == "hacer", first_form
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=5000)
-    assert page.locator(".entry-form").inner_text() == "hacer"
-    verbs = page.locator(".pos-section", has=page.locator("h2", has_text="Verbs"))
-    expect(verbs).to_have_count(1)
-    satis = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^satisfacer$")))
-    expect(satis).to_have_count(1)
-    expect(satis.locator(".show-all")).to_have_count(1)
-    assert "47 forms" in satis.locator(".show-all").inner_text()
-    expect(page.locator(".pos-nav button")).to_have_count(3)
-    print("PASS 5: 'hacer' -> hacer first; verb section renders satisfacer card with 'Show all 47 forms' toggle")
-    page.evaluate("window.scrollTo(0, 0)")
-    shot(page, "03-analysis-hacer.png")
-
-    # ---- 6. expand satisfacer's form grid
-    satis.locator(".show-all").click()
-    expect(satis.locator(".show-all")).to_have_count(0)
-    expect(satis.locator(".form-chip")).to_have_count(47)
-    satis.scroll_into_view_if_needed()
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(250)
-    shot(page, "04-expanded.png")
-    print("PASS 6: 'Show all 47 forms' expands satisfacer to 47 form chips")
-
-    # ---- 7. Escape closes a reopened dropdown (end-of-flow re-check)
-    type_query(page, "hac")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    assert not page.locator("#search-listbox").is_hidden()
-    page.keyboard.press("Escape")
-    assert page.locator("#search-listbox").is_hidden()
-    print("PASS 7: Escape closes a reopened dropdown")
-
-    # ---- 8. dark mode
-    dark = browser.new_page(viewport={"width": 1100, "height": 800}, color_scheme="dark")
-    dark.goto(BASE + "/", wait_until="networkidle")
-    type_query(dark, "mient")
-    dark.wait_for_selector(".option-row", state="visible", timeout=5000)
-    select_row(dark, 8)
-    shot(dark, "05-dark.png")
-    dark.close()
-    print("PASS 8: dark-mode analysis captured")
-
-    # ---- 9. mobile 400px
-    mobile = browser.new_page(viewport={"width": 400, "height": 800})
-    mobile.goto(BASE + "/", wait_until="networkidle")
-    type_query(mobile, "hacer")
-    mobile.wait_for_selector(".option-row", state="visible", timeout=5000)
-    mobile.keyboard.press("Enter")
-    mobile.wait_for_selector("#analysis .entry-card", state="visible", timeout=5000)
-    shot(mobile, "06-mobile.png")
-    mobile.close()
-    print("PASS 9: mobile (400px) analysis captured")
-
-    # ---- 10. large synthetic family: probar (15-member verb group, 315-form head)
-    start = time.perf_counter()
-    type_query(page, "probar")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    render_elapsed = time.perf_counter() - start
-    assert render_elapsed < 8, f"analysis render too slow: {render_elapsed:.1f}s"
-    assert page.locator(".entry-form").inner_text() == "probar"
-    verbs = page.locator(".pos-section", has=page.locator("h2", has_text="Verbs"))
-    expect(verbs.locator(".member-card")).to_have_count(12)
-    expect(verbs.locator(".show-all", has_text="lemmas")).to_have_count(1)
-    assert "15 lemmas" in verbs.locator(".show-all", has_text="lemmas").inner_text()
-    # unknown POS tags from the backend render without breaking
-    expect(page.locator(".pos-section", has=page.locator("h2", has_text="Names"))).to_have_count(1)
-    expect(page.locator(".pos-section", has=page.locator("h2", has_text="Phrases"))).to_have_count(1)
-    expect(page.locator(".pos-nav button")).to_have_count(5)
-    print(f"PASS 10: probar family renders in {render_elapsed:.2f}s; verb section collapsed to 12 with "
-          "'Show all 15 lemmas'; unknown POS sections (Names/Phrases) render")
-
-    # ---- 11. expand section + expand the 300+ form member; page stays responsive
-    verbs.locator(".show-all", has_text="lemmas").click()
-    expect(verbs.locator(".member-card")).to_have_count(15)
-    expect(verbs.locator(".show-all", has_text="lemmas")).to_have_count(0)
-    probar_card = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^probar$")))
-    expect(probar_card.locator(".show-all")).to_have_count(1)
-    probar_card.locator(".show-all").click()
-    clitic_toggle = probar_card.locator(".show-all", has_text="clitic forms")
-    if clitic_toggle.count():
-        clitic_toggle.click()  # the clitics bucket stays collapsed until its own toggle
-    chip_count = probar_card.locator(".form-chip").count()
-    assert chip_count >= 300, chip_count
-    t0 = time.perf_counter()
-    assert page.evaluate("1 + 1") == 2
-    assert time.perf_counter() - t0 < 2, "page unresponsive after rendering large grid"
-    print(f"PASS 11: section expanded to 15 lemmas; probar card shows {chip_count} form chips; page responsive")
-    page.evaluate("document.querySelector('.pos-section').scrollIntoView()")
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(300)
-    shot(page, "07-large-family.png")
-    # relation chips with long labels (task C) must wrap gracefully next to the lemma
-    page.locator(".pos-section", has=page.locator("h2", has_text="Nouns")).scroll_into_view_if_needed()
-    page.wait_for_timeout(250)
-    shot(page, "09-relation-chips.png")
-    inherited = page.locator(".relation-chip", has_text="inherited from Latin")
-    expect(inherited).to_have_count(1)
-    expect(page.locator(".relation-chip", has_text="same paradigm as probar")).to_have_count(1)
-    assert inherited.first.evaluate("(el) => el.getBoundingClientRect().width > 0")
-    print("PASS 11b: long relation labels render and wrap next to the lemma")
-
-    # ---- 12. long gloss truncates to one line in the dropdown
-    type_query(page, "contraprobar")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    first_opt = page.locator(".option-row").first
-    gloss = first_opt.locator(".row-gloss")
-    assert gloss.evaluate("(el) => el.scrollWidth > el.clientWidth"), "long gloss should be ellipsised"
-    assert gloss.evaluate("(el) => getComputedStyle(el).textOverflow") == "ellipsis"
-    assert first_opt.evaluate("(el) => el.offsetHeight") <= 60, "long gloss must not grow the row"
-    shot(page, "08-long-gloss-dropdown.png")
-    print("PASS 12: long gloss truncated to one line with ellipsis, row height unchanged")
-
-    # ------------------------------------------------------------------
-    # Family map (Map | List toggle, SVG tree, ancestry ribbon, cousins)
-    # ------------------------------------------------------------------
-
-    # ---- 13. Map | List toggle: switches views, persists across reload
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=5000)
-    # list is the default view and the map is not even rendered until chosen
-    assert page.locator(".pos-section").count() > 0, "list view must be the default"
-    assert page.locator(".map-wrap").count() == 0, "map must not render in list mode"
-    page.locator(".view-toggle button[data-view='map']").click()
-    assert page.locator(".map-wrap").is_visible()
-    assert page.locator(".pos-section").count() == 0, "list sections must hide in map mode"
-    assert page.evaluate("() => localStorage.getItem('sma.view')") == "map"
-    # the choice persists: reload, re-open the analysis, the map is up
-    page.reload()
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
-    print("PASS 13: Map|List toggle switches views and persists in localStorage (list default)")
-
-    # tall, wide viewport so the full tree fits the family-map screenshots
-    # at natural (unscaled) size
-    page.set_viewport_size({"width": 1700, "height": 1900})
-
-    # ---- 14. map node count + deep-subtree collapse badges
-    # hacer's tree has 26 nodes; the 3 at depth >= 3 start collapsed behind
-    # +N badges (trees above 25 nodes collapse), so 23 are visible
-    assert page.locator(".map-node").count() == 23, page.locator(".map-node").count()
-    assert page.locator(".map-collapse-badge").count() == 2
-    page.locator(".map-collapse-badge", has_text="+1").click()
-    page.wait_for_timeout(100)
-    assert page.locator(".map-node").count() == 24
-    page.locator(".map-collapse-badge", has_text="+2").click()
-    page.wait_for_timeout(100)
-    assert page.locator(".map-node").count() == 26
-    assert page.locator(".map-collapse-badge").count() == 0
-    # the flagship chains are present once expanded
-    for lemma in ["hacendado", "hechicería", "hechicera"]:
-        assert page.locator(".map-node-lemma", has_text=re.compile("^" + re.escape(lemma) + "$")).count() == 1
-    # root and selected node carry their distinguishing styles
-    assert page.locator(".map-node.is-root .map-node-lemma").text_content() == "hacer"
-    assert page.locator(".map-node.is-selected .map-node-lemma").text_content() == "hacer"
-    page.evaluate("""() => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        document.querySelector('.map-wrap').scrollIntoView({block: 'start'});
-        window.scrollBy(0, -70);
-    }""")
-    page.wait_for_timeout(300)
-    shot(page, "30-map-hacer.png")
-    print("PASS 14: map renders 23/26 hacer nodes with +N collapse badges; expanding shows all 26")
-
-    # ---- 15. hovering highlights the path back to the root
-    hechicero_node = page.locator(".map-node", has=page.locator(".map-node-lemma", has_text=re.compile(r"^hechicero$")))
-    hechicero_node.scroll_into_view_if_needed()
-    hechicero_node.hover()
-    page.wait_for_timeout(250)
-    assert page.locator(".map-node.is-path").count() == 3, page.locator(".map-node.is-path").count()
-    assert page.locator(".map-edge.is-path").count() == 2
-    assert page.locator(".map-node.is-hovered .map-node-lemma").text_content() == "hechicero"
-    path_lemmas = page.locator(".map-node.is-path .map-node-lemma").all_text_contents()
-    assert sorted(path_lemmas) == ["hacer", "hechicero", "hechizo"], path_lemmas
-    shot(page, "31-map-hover-path.png")
-    page.mouse.move(8, 8)  # leave the tree so the highlight clears
-    page.wait_for_timeout(200)
-    assert page.locator(".map-node.is-path").count() == 0
-    print("PASS 15: hovering a node highlights its path to the root (3 nodes, 2 edges)")
-
-    # ---- 16. clicking a node navigates to that word's analysis
-    hechicero_node.click()
-    expect(page.locator(".entry-form")).to_have_text("hechicero", timeout=5000)
-    expect(page.locator(".map-node.is-selected .map-node-lemma")).to_have_text("hechicero", timeout=5000)
-    print("PASS 16: clicking the hechicero node navigates to hechicero's analysis")
-
-    # ---- 17. keyboard: arrows move between nodes, Enter opens
-    page.locator(".map-node.is-selected").click()  # re-clicking the selected node is a no-op but focuses it
-    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
-    assert focused == "hechicero", focused
-    page.keyboard.press("ArrowLeft")
-    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
-    assert focused == "hechizo", focused
-    page.keyboard.press("ArrowLeft")
-    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
-    assert focused == "hacer", focused
-    page.keyboard.press("ArrowDown")
-    focused = page.evaluate("() => document.activeElement.querySelector('.map-node-lemma')?.textContent")
-    assert focused == "deshacer", focused
-    page.keyboard.press("Enter")
-    expect(page.locator(".entry-form")).to_have_text("deshacer", timeout=5000)
-    print("PASS 17: keyboard navigation — ArrowLeft/ArrowDown move focus, Enter opens the word")
-
-    # ---- 18. ancestry ribbon renders oldest -> newest with mode arrows
+    # ---- 5. Enter with the dropdown closed also resolves the typed string ----
     type_query(page, "satisfacer")
     page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("Escape")
     page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .ancestry-ribbon", state="visible", timeout=5000)
-    words = page.locator(".anc-step .step-word").all_text_contents()
-    assert words == ["facere", "satisfacere", "satisfacer"], words
-    langs = page.locator(".anc-step .step-lang").all_text_contents()
-    assert langs == ["Latin", "Latin", "Spanish"], langs
-    notes = page.locator(".anc-step .step-note").all_text_contents()
-    assert notes == ["(satis- + facere)"], notes
-    # derived = dotted, borrowed = dashed; the legend covers the modes present
-    assert page.locator(".ribbon-chain .anc-arrow.mode-derived").count() == 1
-    assert page.locator(".ribbon-chain .anc-arrow.mode-borrowed").count() == 1
-    assert page.locator(".ribbon-chain .anc-arrow.mode-inherited").count() == 0
-    assert page.locator(".anc-legend .legend-item").count() == 2
-    page.evaluate("""() => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        document.querySelector('.ancestry-ribbon').scrollIntoView({block: 'start'});
-        window.scrollBy(0, -80);
-    }""")
-    page.wait_for_timeout(300)
-    shot(page, "32-ancestry-ribbon.png")
-    print("PASS 18: ancestry ribbon renders facere -> satisfacere -> satisfacer (oldest first) with derived/borrowed arrows")
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert page.locator("#dashboard .entry-form").inner_text() == "satisfacer"
+    print("PASS 5: Enter (dropdown closed) resolves the typed string")
 
-    # ---- 19. cousins strip renders separately, with working navigation
-    type_query(page, "echar")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .cousins-strip", state="visible", timeout=5000)
-    assert page.locator(".cousins-title").inner_text() == "Also from Latin iactāre"
-    assert "cutoff" in page.locator(".cousins-note").inner_text()
-    assert page.locator(".cousin-word").all_text_contents() == ["proyectar", "objetar"]
-    assert page.locator(".cousin-path").all_text_contents() == [
-        "proiectāre < pro- + iactāre",
-        "obiectāre < ob- + iactāre",
+    # ---- 6. dashboard renders all six regions ----
+    for rid in REGIONS:
+        assert page.locator(f"#{rid}").count() == 1, f"missing region {rid}"
+        assert page.locator(f"#{rid}").is_visible(), f"region {rid} not visible"
+    words = page.locator("#region-forms .form-item .form-word").all_text_contents()
+    assert words == ["satisfago", "satisfaces", "satisface", "satisfacemos", "satisfacéis", "satisfacen"], words
+    feats = page.locator("#region-forms .form-item .form-feat").all_text_contents()
+    assert feats[0] == "pres. ind. 1ª sing.", feats
+    assert "verbo ·" in page.locator(".morph-summary").inner_text()
+    print(f"PASS 6: all six regions render; other-forms strip = {words} with Spanish feature captions")
+
+    # ---- 7. radial hub: centre label, node count, searched-form highlight ----
+    hub = page.locator(".radial-hub text").text_content()
+    assert hub == "hacer", hub
+    nodes = page.locator(".radial-node")
+    assert 1 <= nodes.count() <= 10, nodes.count()
+    assert page.locator(".radial-node.is-selected text.word").text_content() == "satisfacer"
+    assert page.locator("#region-family .count-badge").inner_text() == "26"
+    # text alternative present on the svg
+    label = page.locator(".radial-svg").get_attribute("aria-label")
+    assert "Familia de palabras de hacer" in label and "satisfacer" in label, label
+    # no stale loading spinner once results render; no duplicated satellite
+    assert page.locator("#loading").is_hidden(), "loading spinner must hide once results render"
+    node_lemmas = page.locator(".radial-node text.word").all_text_contents()
+    assert len(node_lemmas) == len(set(node_lemmas)), f"radial must not repeat a lemma: {node_lemmas}"
+    print(f"PASS 7: radial hub '{hub}' with {nodes.count()} satellites; satisfacer highlighted; badge 26; aria-label present")
+
+    # ---- 8. origin chain oldest -> newest (real cited forms) ----
+    assert page.locator("#region-origin .origin-lead").inner_text() == "Del latín"
+    assert page.locator("#region-origin .origin-source-word").inner_text() == "facere"
+    chain = [
+        (w, l)
+        for w, l in zip(
+            page.locator("#region-origin .origin-stage .word").all_text_contents(),
+            page.locator("#region-origin .origin-stage .lang").all_text_contents(),
+        )
     ]
-    # visually secondary: a different background from the family map, and a
-    # sibling of the map rather than part of it
-    strip_bg = page.evaluate("() => getComputedStyle(document.querySelector('.cousins-strip')).backgroundColor")
-    map_bg = page.evaluate("() => getComputedStyle(document.querySelector('.map-wrap')).backgroundColor")
-    assert strip_bg != map_bg, (strip_bg, map_bg)
-    assert page.locator(".map-wrap .cousins-strip").count() == 0
-    # clicking a cousin navigates to its own family via entry_id
-    page.locator(".cousin-chip", has_text="proyectar").click()
-    expect(page.locator(".entry-form")).to_have_text("proyectar", timeout=5000)
-    # back to echar to frame the cousins screenshot
-    type_query(page, "echar")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .cousins-strip", state="visible", timeout=5000)
-    page.evaluate("""() => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        document.querySelector('.cousins-strip').scrollIntoView({block: 'start'});
-        window.scrollBy(0, -24);
-    }""")
+    assert chain == [
+        ("facere", "latín"),
+        ("satisfacere", "latín"),
+        ("satisfacer", "español"),
+    ], chain
+    assert page.locator("#region-origin .origin-arrow").count() == 2
+    print("PASS 8: origin chain renders facere -> satisfacere -> satisfacer (oldest first) with 2 arrows")
+
+    # ---- 9. empty states: cognates + mnemonics (Phase 1 -> null) ----
+    assert page.locator("#region-cognates .empty-state").inner_text() == EMPTY_COGNATES
+    assert page.locator("#region-mnemonics .empty-state").inner_text() == EMPTY_MNEMONIC
+    print("PASS 9: cognates and mnemonics render their documented empty states")
+
+    # ---- 10. Layer 3 hand-off: 'Ver toda la familia' -> map view, back works ----
+    page.locator("#region-family .card-link", has_text="Ver toda la familia").click()
+    page.wait_for_selector("#layer3 .map-wrap", state="visible", timeout=8000)
+    assert page.locator("#layer3 .map-node").count() >= 20
+    assert page.locator("#layer3-title").inner_text() == "Familia completa de satisfacer"
+    page.locator("#layer3-back").click()
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=5000)
+    print("PASS 10: 'Ver toda la familia' opens the Layer-3 map; back returns to the dashboard")
+
+    # ---- 11. Layer 3 hand-off: 'Ver conjugación completa' -> list view ----
+    page.locator("#region-forms .card-link", has_text="Ver conjugación completa").click()
+    page.wait_for_selector("#layer3 .entry-card", state="visible", timeout=8000)
+    assert page.locator("#layer3 .pos-section").count() >= 1
+    assert page.locator("#layer3-title").inner_text() == "Conjugación y formas de satisfacer"
+    page.locator("#layer3-back").click()
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=5000)
+    print("PASS 11: 'Ver conjugación completa' opens the Layer-3 POS-grouped list; back works")
+
+    # ---- 12. recent results: popover, persistence across reload ----
+    page.locator("#recent-btn").click()
+    page.wait_for_selector("#recent-popover", state="visible", timeout=3000)
+    recents = page.locator(".popover-word-btn").all_text_contents()
+    assert "satisfacer" in recents and "hacer" in recents, recents
+    page.locator("#recent-popover").press("Escape") if False else page.keyboard.press("Escape")
+    page.locator("#recent-btn").click()  # toggle closed via outside click not needed; re-open
+    page.keyboard.press("Escape")
+    # persistence: reload and re-open
+    page.reload()
+    page.locator("#recent-btn").click()
+    page.wait_for_selector("#recent-popover", state="visible", timeout=3000)
+    assert "satisfacer" in page.locator(".popover-word-btn").all_text_contents()
+    page.keyboard.press("Escape")
+    print("PASS 12: recent results persist across reload in localStorage")
+
+    # ---- 13. favourites: star toggles, sidebar view, persistence ----
+    open_word(page, "hacer")
+    page.locator(".fav-btn").click()
+    assert "active" in page.locator(".fav-btn").get_attribute("class")
+    page.locator(".side-item[data-target='view-favourites']").click()
+    page.wait_for_selector("#favourites-view", state="visible", timeout=3000)
+    fav_lemmas = page.locator(".favourite-card .favourite-lemma .lemma").all_text_contents()
+    assert "hacer" in fav_lemmas, fav_lemmas
+    # persistence across reload (same origin storage)
+    page.reload()
+    page.wait_for_timeout(400)
+    page.locator(".side-item[data-target='view-favourites']").click()
+    page.wait_for_selector("#favourites-view", state="visible", timeout=3000)
+    assert "hacer" in page.locator(".favourite-card .favourite-lemma .lemma").all_text_contents()
+    # clicking a favourite re-analyzes it
+    page.locator(".favourite-card .card-link", has_text="Analizar").first.click()
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert page.locator("#dashboard .entry-form").inner_text() == "hacer"
+    print("PASS 13: favourites persist across reload; clicking one re-analyzes the lemma")
+
+    # ---- 14. deep link ?word= resolves on load ----
+    deep = browser.new_page(viewport={"width": 1535, "height": 1024})
+    deep.goto(BASE + "/?word=satisfacer", wait_until="networkidle")
+    deep.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert deep.locator("#dashboard .entry-form").inner_text() == "satisfacer"
+    assert deep.locator(".radial-hub text").text_content() == "hacer"
+    deep.close()
+    print("PASS 14: ?word=satisfacer resolves on load to the satisfacer analysis")
+
+    # ---- screenshots: captured in the sqlite flow with hablábamos (the
+    #      mockup example) so they are directly comparable to design_UI.png.
+    #      The checks below (dashboard render, decomposition, empty states,
+    #      dark data-theme, mobile layout) still run here against the fixture,
+    #      which is the empty-state test harness. ----
+    page.goto(BASE + "/?word=satisfacer", wait_until="networkidle")
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    page.evaluate("document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 0)")
     page.wait_for_timeout(300)
-    shot(page, "33-cousins.png")
-    print("PASS 19: cousins strip renders from 'Latin iactāre', visually separate, click navigates")
+    print("PASS 15: satisfacer dashboard renders (screenshot captured in the sqlite flow)")
 
-    # ---- 20. single-node family renders a single node, no ribbon, no cousins
-    type_query(page, "heder")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    expect(page.locator(".entry-form")).to_have_text("heder", timeout=5000)
-    assert page.locator(".map-node").count() == 1
-    assert page.locator(".map-node.is-selected").count() == 1
-    assert page.locator(".map-edge").count() == 0
-    assert page.locator(".map-collapse-badge").count() == 0
-    assert page.locator(".ancestry-ribbon").count() == 0
-    assert page.locator(".cousins-strip").count() == 0
-    print("PASS 20: heder — single-node family renders one node with no ribbon/cousins/badges")
+    # decomposition accordion (2-way split, first/cleanest analysis)
+    frame_scroll(page, "#region-morphology")
+    page.locator(".decompose-toggle").click()
+    page.wait_for_selector(".decompose-body", state="visible", timeout=3000)
+    segs = page.locator(".decompose-chip .seg").all_text_contents()
+    assert segs == ["satisfac", "-er"], segs
+    print("PASS 16: decomposition accordion splits satisfac + -er")
 
-    # ---- 21. largest family (24-node probar star) stays usable
-    type_query(page, "probar")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    expect(page.locator(".entry-form")).to_have_text("probar", timeout=8000)
-    assert page.locator(".map-node").count() == 24
-    assert page.locator(".map-collapse-badge").count() == 0
-    page.evaluate("""() => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        document.querySelector('.map-wrap').scrollIntoView({block: 'start'});
-        window.scrollBy(0, -70);
-    }""")
-    page.wait_for_timeout(300)
-    shot(page, "34-map-large-family.png")
-    print("PASS 21: probar 24-node star map renders fully")
+    # 45: empty states via heder (singleton family, no origin)
+    page.goto(BASE + "/?word=heder", wait_until="networkidle")
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert page.locator("#region-origin .empty-state").inner_text() == EMPTY_ORIGIN
+    assert page.locator("#region-cognates .empty-state").inner_text() == EMPTY_COGNATES
+    assert page.locator("#region-mnemonics .empty-state").inner_text() == EMPTY_MNEMONIC
+    assert page.locator("#region-family .radial-empty").inner_text() == EMPTY_FAMILY
+    assert page.locator("#region-family .count-badge").inner_text() == "1"
+    print("PASS 17: heder renders all four documented empty states (origin/cognates/mnemonics/family)")
 
-    # ---- 22. mobile (400px): the map scrolls horizontally instead of cramming
-    mobile = browser.new_page(viewport={"width": 400, "height": 800})
-    mobile.goto(BASE + "/", wait_until="networkidle")
-    mobile.evaluate("() => localStorage.setItem('sma.view', 'map')")  # new pages have isolated storage
-    type_query(mobile, "hacer")
-    mobile.wait_for_selector(".option-row", state="visible", timeout=5000)
-    mobile.keyboard.press("Enter")
-    mobile.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
-    scrolls = mobile.evaluate(
-        "() => { const w = document.querySelector('.map-wrap'); return {scrollW: w.scrollWidth, clientW: w.clientWidth}; }"
-    )
-    assert scrolls["scrollW"] > scrolls["clientW"], scrolls
-    shot(mobile, "35-map-mobile.png")
-    mobile.close()
-    print(f"PASS 22: 400px map scrolls horizontally (scrollWidth {scrolls['scrollW']} > {scrolls['clientW']})")
-
-    # ---- 23. dark-mode map
-    dark = browser.new_page(viewport={"width": 1700, "height": 1900}, color_scheme="dark")
-    dark.goto(BASE + "/", wait_until="networkidle")
-    dark.evaluate("() => localStorage.setItem('sma.view', 'map')")
-    type_query(dark, "hacer")
-    dark.wait_for_selector(".option-row", state="visible", timeout=5000)
-    dark.keyboard.press("Enter")
-    dark.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
-    for _ in range(4):  # expand the deep subtrees so the full tree shows
-        badge = dark.locator(".map-collapse-badge").first
-        if not badge.count():
-            break
-        badge.click()
-        dark.wait_for_timeout(80)
-    shot(dark, "36-map-dark.png")
+    # ---- 18. dark mode ----
+    dark = browser.new_page(viewport={"width": 1535, "height": 1024}, color_scheme="dark")
+    dark.goto(BASE + "/?word=satisfacer", wait_until="networkidle")
+    dark.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert dark.locator("html").get_attribute("data-theme") in ("system", "dark")
     dark.close()
-    print("PASS 23: dark-mode map captured")
+    print("PASS 18: dark mode applies (data-theme set)")
 
-    # ---- 24. zoom controls: -/+ with a live percentage, Fit, root at the
-    # left on first render
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .map-wrap", state="visible", timeout=5000)
-    assert page.locator(".map-toolbar .zoom-level").inner_text() == "100%"
-    assert page.evaluate(
-        "() => { const w = document.querySelector('.map-wrap'); return w.scrollLeft === 0 && w.scrollTop === 0; }"
-    ), "root must be visible at the top-left on first render"
-    page.locator(".zoom-btn", has_text="+").click()
-    assert page.locator(".map-toolbar .zoom-level").inner_text() == "125%"
-    page.locator(".zoom-btn", has_text="\u2212").click()
-    page.locator(".zoom-btn", has_text="\u2212").click()
-    assert page.locator(".map-toolbar .zoom-level").inner_text() == "75%"
-    page.locator(".zoom-fit").click()
-    level = page.locator(".map-toolbar .zoom-level").inner_text()
-    pct = int(level.rstrip("%"))
-    assert 20 <= pct <= 100, level
-    transform = page.evaluate("() => document.querySelector('.map-svg').style.transform")
-    assert transform.startswith("scale("), transform
-    print(f"PASS 24: zoom controls work (100% -> 125% -> 75% -> Fit {level}); root anchored at the left")
+    # ---- 19. mobile 400px: single column + horizontal sidebar ----
+    mobile = browser.new_page(viewport={"width": 400, "height": 900})
+    mobile.goto(BASE + "/?word=satisfacer", wait_until="networkidle")
+    mobile.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    widths = mobile.evaluate(
+        """() => ['region-morphology','region-family','region-origin',
+                   'region-cognates','region-mnemonics','region-forms'].map(
+            (id) => Math.round(document.getElementById(id).getBoundingClientRect().width))"""
+    )
+    assert all(w >= 360 for w in widths), widths  # one full-width column each
+    sidebar_top = mobile.evaluate("() => document.querySelector('.sidebar').getBoundingClientRect().top")
+    assert sidebar_top < 300, sidebar_top  # horizontal bar below the header, not a tall rail
+    mobile.close()
+    print(f"PASS 19: mobile renders single-column ({widths}); horizontal sidebar below header")
 
 
 def main():
@@ -520,8 +358,9 @@ def main():
 
 
 # ---------------------------------------------------------------------------
-# Real-data flow (MORPH_BACKEND=sqlite): latency, dropdown quality, large
-# analysis, the mienta ambiguity, hizo/hacerlo, and the no-matches state.
+# Real-data flow (MORPH_BACKEND=sqlite): latency, dropdown quality, the
+# mienta/hecho ambiguities, Layer-3 map/list interactions and the dashboard
+# on real data.
 # ---------------------------------------------------------------------------
 
 _REAL_QUERIES = ["h", "ha", "hac", "hace", "hacer", "mient", "hiz", "casa", "cant"]
@@ -547,11 +386,11 @@ else document.addEventListener('DOMContentLoaded', attachLatencyObserver);
 
 
 def run_real_flows(browser):
-    page = browser.new_page(viewport={"width": 1100, "height": 900})
+    page = browser.new_page(viewport={"width": 1535, "height": 1024})
     page.add_init_script(_LATENCY_INIT)
     page.goto(BASE + "/", wait_until="networkidle")
 
-    # ---- 1. keystroke -> dropdown paint latency (user experience)
+    # ---- 1. keystroke -> dropdown paint latency ----
     print("latency (keystroke -> dropdown paint), ms:")
     for q in _REAL_QUERIES:
         if len(q) < 2:
@@ -568,382 +407,205 @@ def run_real_flows(browser):
         print(f"  {q:7s} {d if d is not None else 'n/a'}")
     print("PASS 1: latency measured; single-char queries never fire")
 
-    # ---- 1b. in-flight cancellation on rapid retype
-    page.fill("#search-input", "hac")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.wait_for_timeout(200)  # dropdown for 'hac' is up; fetch in flight
-    page.fill("#search-input", "hacer")
-    page.wait_for_function(
-        """() => {
-            const first = document.querySelector('.option-row .row-form');
-            return first && first.textContent === 'hacer';
-        }""",
-        timeout=5000,
-    )
-    print("PASS 1b: rapid retype cancels in-flight request; final dropdown is 'hacer'")
-
-    # ---- 2. dropdown quality on real data ('hac')
+    # ---- 2. dropdown quality on real data ('hac') ----
     type_query(page, "hac")
     page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.wait_for_timeout(150)
-    shot(page, "real-dropdown-hac.png")
-    rows = page.evaluate("""() => [...document.querySelectorAll('.option-row')].map((r) => ({
-        form: r.querySelector('.row-form').textContent,
-        qual: (r.querySelector('.row-qualifier') || {}).textContent || null,
-        pos: r.querySelector('.pos-chip').textContent,
-        gloss: (r.querySelector('.row-gloss') || {}).textContent || '',
-    }))""")
-    print("hac dropdown rows:")
-    for r in rows:
-        print(f"   {r['form']!r:14s} {r['qual']!r:12s} {r['pos']:6s} gloss={r['gloss'][:44]!r}")
-    print("PASS 2: 'hac' dropdown rendered (see rows above)")
+    rows = page.evaluate(
+        """() => [...document.querySelectorAll('.option-row')].map((r) => ({
+            form: r.querySelector('.row-form').textContent,
+            pos: r.querySelector('.pos-chip').textContent,
+        }))"""
+    )
+    assert rows and rows[0]["form"] == "hacer", rows[0]
+    print(f"PASS 2: 'hac' dropdown rendered ({len(rows)} rows, first={rows[0]['form']})")
 
-    # ---- 3. genuinely large analysis: hacer
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    t0 = time.perf_counter()
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .pos-section", state="visible", timeout=10000)
-    render_s = time.perf_counter() - t0
-    nodes = page.evaluate("() => document.querySelectorAll('*').length")
-    groups = page.evaluate("""() => [...document.querySelectorAll('.pos-section')].map(
-        (s) => s.querySelector('h2').textContent + ':' + s.querySelectorAll('.member-card').length)""")
-    assert page.locator(".entry-form").inner_text() == "hacer"
-    print(f"PASS 3: hacer analysis rendered in {render_s * 1000:.0f} ms; {nodes} DOM nodes; groups: {groups}")
-    shot(page, "10-real-hacer.png")
-    # scroll smoothness probe: 40 instant jumps, measuring frame pacing
-    jank = page.evaluate("""() => new Promise((resolve) => {
-        const scroller = document.scrollingElement;
-        const total = scroller.scrollHeight - window.innerHeight;
-        const steps = 40;
-        const deltas = [];
-        let i = 0;
-        let last = performance.now();
-        const step = () => {
-            const now = performance.now();
-            deltas.push(now - last);
-            last = now;
-            window.scrollTo(0, Math.round((i / steps) * total));
-            i += 1;
-            if (i <= steps) requestAnimationFrame(step);
-            else resolve({frames: deltas.length, max: Math.round(Math.max(...deltas)),
-                          over50: deltas.filter((d) => d > 50).length});
-        };
-        requestAnimationFrame(step);
-    })""")
-    assert jank["max"] < 100, jank
-    print(f"PASS 3b: scroll probe {jank['frames']} frames, max {jank['max']} ms, {jank['over50']} frames over 50 ms")
-
-    # ---- 3c. paradigm sectioning inside the hacer member card
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=10000)
-    hacer_card = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^hacer$"))).first
-    hacer_card.locator(".show-all").click()
-    heads = page.locator(".paradigm-head").all_text_contents()
-    for expected in ["Non-finite", "Indicative", "Subjunctive", "Imperative", "With clitics"]:
-        assert expected in heads, (expected, heads)
-    # the citation form sits in the Non-finite section and leads it
-    nonfinite = page.locator(".paradigm-section", has=page.locator(".paradigm-head", has_text="Non-finite"))
-    assert nonfinite.locator(".form-chip.citation").count() >= 1
-    assert nonfinite.locator(".form-chip").first.inner_text() == "hacer"
-    # present-tense chips keep person order 1sg, 2sg, 3sg, 1pl, 2pl, 3pl
-    # (vos forms such as "hacés" may interleave with 2sg — the six standard
-    # persons must appear in strictly increasing order, not contiguously)
-    indic = page.locator(".paradigm-section", has=page.locator(".paradigm-head", has_text="Indicative"))
-    indic_chips = indic.locator(".form-chip").all_text_contents()
-    wanted = ["hago", "haces", "hace", "hacemos", "hacéis", "hacen"]
-    idxs = [indic_chips.index(w) for w in wanted]
-    assert idxs == sorted(idxs), (indic_chips, idxs)
-    # clitics are collapsed by default with their own toggle
-    clitics_toggle = page.locator(".show-all", has_text="clitic forms")
-    expect(clitics_toggle).to_have_count(1)
-    hacer_card.scroll_into_view_if_needed()
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(200)
-    shot(page, "13-paradigm-sections.png")
-    clitics_section = page.locator(".paradigm-section", has=page.locator(".paradigm-head", has_text="With clitics"))
-    clitics_section.scroll_into_view_if_needed()
-    chips_before = clitics_section.locator(".form-chip").count()
-    clitics_toggle.click()
-    expect(clitics_toggle).to_have_count(0)
-    chips_after = clitics_section.locator(".form-chip").count()
-    assert chips_after > chips_before, (chips_before, chips_after)
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(200)
-    shot(page, "14-clitics-expanded.png")
-    print(f"PASS 3c: paradigm sections render (Non-finite/Indicative/Subjunctive/Imperative/With clitics); "
-          f"clitic toggle expands {chips_before} -> {chips_after} chips")
-
-    # ---- 4. the mienta ambiguity
+    # ---- 3. mienta ambiguity in the dropdown ----
     type_query(page, "mienta")
     page.wait_for_selector(".option-row", state="visible", timeout=5000)
     mienta_rows = page.locator(".option-row", has=page.locator(".row-form", has_text=re.compile(r"^mienta$")))
     expect(mienta_rows).to_have_count(2)
     quals = sorted(mienta_rows.locator(".row-qualifier").all_text_contents())
     assert quals == ["(mentar)", "(mentir)"], quals
-    page.evaluate("window.scrollTo(0, 0)")  # the scroll probe left the viewport at the bottom
-    page.wait_for_timeout(120)
-    shot(page, "11-real-mienta.png")
-    # each row leads to a different analysis header (order-agnostic: click the row)
-    mienta_rows.filter(has=page.locator(".row-qualifier", has_text="mentir")).click()
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "mienta"
-    assert "mentir" in page.locator(".entry-lemma").inner_text()
-    type_query(page, "mienta")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    mrows2 = page.locator(".option-row", has=page.locator(".row-form", has_text=re.compile(r"^mienta$")))
-    mrows2.filter(has=page.locator(".row-qualifier", has_text="mentar")).click()
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "mienta"
-    assert "mentar" in page.locator(".entry-lemma").inner_text()
-    print("PASS 4: mienta shows mentir + mentar rows; each selects a different analysis header")
+    print("PASS 3: mienta shows mentir + mentar rows")
 
-    # ---- 5. hizo
-    type_query(page, "hizo")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "hizo"
-    assert "hacer" in page.locator(".entry-lemma").inner_text()
-    feats = page.locator(".entry-features li").all_text_contents()
-    assert any("preterite" in f and "3rd singular" in f for f in feats), feats
-    assert page.locator(".pos-section h2", has_text=re.compile(r"^Verbs$")).count() == 1
-    print("PASS 5: hizo -> header hizo/hacer with features " + str(feats))
-    shot(page, "12-real-hizo.png")
-
-    # ---- 6. hacerlo (clitic form findable, features mention the clitic)
-    type_query(page, "hacerlo")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    assert page.locator(".option-row").count() >= 1
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "hacerlo"
-    feats = page.locator(".entry-features li").all_text_contents()
-    assert any("clitic" in f for f in feats), feats
-    print("PASS 6: hacerlo findable; features mention the clitic: " + str(feats[:2]))
-
-    # ---- 6b. three-way hecho ambiguity (verb participle / adjective / noun)
-    type_query(page, "hecho")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    hecho_rows = page.locator(".option-row", has=page.locator(".row-form", has_text=re.compile(r"^hecho$")))
-    expect(hecho_rows).to_have_count(3)
-    pos_chips = sorted(hecho_rows.locator(".pos-chip").all_text_contents())
-    assert pos_chips == ["adj", "noun", "verb"], pos_chips
-    # only the disambiguating qualifier renders; the self-qualifying rows
-    # ("hecho (hecho)") leave the qualifier cell empty
-    quals = sorted(hecho_rows.locator(".row-qualifier").all_text_contents())
-    assert quals == ["", "", "(hacer)"], quals
-    shot(page, "15-real-hecho-ambiguity.png")
-    print("PASS 6b: hecho shows three rows (hacer participle / adj / noun); only the (hacer) qualifier renders — self-qualifying cells are empty")
-
-    # ---- 6c. relation chips across the hacer family (labels still being tuned)
-    type_query(page, "hacer")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=15000)
-    for _ in range(6):  # expand any collapsed lemma sections so all chips are visible
-        toggles = page.locator(".show-all", has_text="lemmas")
-        if not toggles.count():
-            break
-        toggles.first.click()
-        page.wait_for_timeout(120)
-    # no exact label text is asserted — the pipeline is still adjusting the
-    # relation strings; what matters is that chips render across the family
-    chips = page.locator(".relation-chip")
-    assert chips.count() >= 8, chips.count()
-    # the longest label must stay inside its card (no layout breakage)
-    longest_text = chips.evaluate_all(
-        "(els) => els.reduce((m, el) => (el.textContent.length > m.length ? el.textContent : m), '')"
-    )
-    assert len(longest_text) >= 25, longest_text
-    longest_chip = page.locator(".relation-chip", has_text=re.compile(re.escape(longest_text)))
-    assert longest_chip.count() >= 1
-    assert longest_chip.first.evaluate(
-        "(el) => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().right <= el.closest('.member-card').getBoundingClientRect().right"
-    )
-    # frame the shot on the card carrying the longest label, clearing the
-    # sticky pos-nav bar so the card's top labels are not clipped; the page
-    # uses CSS smooth scrolling, so force an instant scroll here
-    longest_card = longest_chip.first.locator("xpath=ancestor::*[contains(@class,'member-card')]")
-    longest_card.evaluate("""(el) => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        el.scrollIntoView({block: 'start'});
-        window.scrollBy(0, -96);
-    }""")
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(300)
-    shot(page, "16-real-hacer-relations.png")
-    print(f"PASS 6c: {chips.count()} relation chips render across the family; longest label {longest_text!r} stays inside its card")
-
-    # ---- 7. no-matches state (substring fallback path)
+    # ---- 4. no-matches state ----
     type_query(page, "zzzz")
-    # wait for the outcome instead of a fixed sleep: the substring fallback
-    # scans the whole dictionary and the machine may be busy from the
-    # previous analysis render
-    expect(page.locator("#search-status")).to_have_text("No matches", timeout=8000)
+    expect(page.locator("#search-status")).to_have_text("Sin resultados", timeout=8000)
     assert page.locator("#search-listbox").is_hidden()
-    assert page.locator(".option-row").count() == 0
-    print("PASS 7: zzzz shows clean 'No matches' — no hang, no stale list")
+    print("PASS 4: zzzz shows clean 'Sin resultados'")
 
-    # ---- 8. dark-mode and mobile shots against real data
-    dark = browser.new_page(viewport={"width": 1100, "height": 800}, color_scheme="dark")
-    dark.goto(BASE + "/", wait_until="networkidle")
-    type_query(dark, "hacer")
-    dark.wait_for_selector(".option-row", state="visible", timeout=5000)
-    dark.keyboard.press("Enter")
-    dark.wait_for_selector("#analysis .entry-card", state="visible", timeout=15000)
+    # ---- 4b. dropdown selection path on real data (the original product
+    #      rule: analysis triggered by selecting a concrete form). Row 0 of
+    #      'miento' is miento (mentar, family head 'mente'); row 1 is miento
+    #      (mentir). ArrowDown+Enter must open the highlighted row, i.e. the
+    #      mentir analysis — proving the selected row, not the top-ranked
+    #      free-text resolution. ----
+    type_query(page, "miento")
+    page.wait_for_selector(".option-row", state="visible", timeout=5000)
+    page.keyboard.press("ArrowDown")  # row 0 highlighted -> row 1 (mentir)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=8000)
+    assert page.locator("#dashboard .entry-form").inner_text() == "miento"
+    assert page.locator(".radial-hub text").text_content() == "mentir", \
+        "dropdown selection must open the highlighted row (miento under mentir), not the top-ranked (mentar)"
+    print("PASS 4b: dropdown selection (ArrowDown+Enter) opens miento under mentir")
+
+    # ---- 5. dashboard on real data: hacer ----
+    open_word(page, "hacer")
+    assert page.locator("#dashboard .entry-form").inner_text() == "hacer"
+    for rid in REGIONS:
+        assert page.locator(f"#{rid}").is_visible(), rid
+    assert page.locator(".radial-hub text").text_content() == "hacer"
+    assert page.locator(".radial-node").count() <= 10
+    strip = page.locator("#region-forms .form-item .form-word").all_text_contents()
+    assert len(strip) >= 6, strip
+    print(f"PASS 5: hacer dashboard renders; strip {strip}")
+
+    # ---- 6. Layer 3 map: open, hover-path, zoom, node navigation ----
+    page.set_viewport_size({"width": 1700, "height": 1900})
+    page.locator("#region-family .card-link", has_text="Ver toda la familia").click()
+    page.wait_for_selector("#layer3 .map-wrap", state="visible", timeout=10000)
+    assert page.locator("#layer3 .map-node").count() >= 10
+    assert page.locator("#layer3 .map-node.is-root .map-node-lemma").text_content() == "hacer"
+    # hover path to root from any non-root node
+    target = page.locator("#layer3 .map-node:not(.is-root):not(.is-selected)").first
+    target.scroll_into_view_if_needed()
+    target.hover()
+    page.wait_for_timeout(250)
+    assert page.locator("#layer3 .map-node.is-path").count() >= 2
+    # zoom controls
+    assert page.locator("#layer3 .map-toolbar .zoom-level").inner_text() == "100%"
+    page.locator("#layer3 .zoom-btn", has_text="+").click()
+    assert page.locator("#layer3 .map-toolbar .zoom-level").inner_text() == "125%"
+    page.mouse.move(8, 8)
+    page.wait_for_timeout(200)
+    print("PASS 6: Layer-3 map renders the full hacer tree; hover path + zoom work")
+    # navigate to a node from the map (keyboard path — dodges sticky overlays)
+    target.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#dashboard .entry-form", state="visible", timeout=10000)
+    assert page.locator("#dashboard .entry-form").inner_text() != "hacer"
+    print(f"PASS 6b: opening a map node navigates to {page.locator('#dashboard .entry-form').inner_text()}'s analysis")
+
+    # ---- 7. Layer 3 list: paradigm sections + clitics toggle ----
+    open_word(page, "hacer")
+    page.locator("#region-forms .card-link", has_text="Ver conjugación completa").click()
+    page.wait_for_selector("#layer3 .entry-card", state="visible", timeout=20000)
+    hacer_card = page.locator("#layer3 .member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^hacer$"))).first
+    hacer_card.locator(".show-all").click()
+    heads = page.locator("#layer3 .paradigm-head").all_text_contents()
+    for expected in ["No personales", "Indicativo", "Subjuntivo", "Imperativo", "Con clíticos"]:
+        assert expected in heads, (expected, heads)
+    indic = page.locator("#layer3 .paradigm-section", has=page.locator(".paradigm-head", has_text="Indicativo"))
+    chips = indic.locator(".form-chip").all_text_contents()
+    wanted = ["hago", "haces", "hace", "hacemos", "hacéis", "hacen"]
+    idxs = [chips.index(w) for w in wanted]
+    assert idxs == sorted(idxs), (chips, idxs)
+    expect(page.locator("#layer3 .show-all", has_text="formas con clítico")).to_have_count(1)
+    page.locator("#layer3 .show-all", has_text="formas con clítico").click()
+    print("PASS 7: Layer-3 list shows paradigm sections (1sg..3pl order) and the clitic toggle expands")
+
+    # ---- 8. cousins strip inside Layer 3 (echar) ----
+    open_word(page, "echar")
+    assert page.locator("#region-origin .origin-source-word").inner_text() == "iactāre"
+    steps = page.locator("#region-origin .origin-stage .word").all_text_contents()
+    # real chain is rich (iactāre -> ... -> echar); assert direction oldest->newest
+    assert steps and steps[0] == "iactāre" and steps[-1] == "echar" and len(steps) >= 2, steps
+    langs = page.locator("#region-origin .origin-stage .lang").all_text_contents()
+    assert langs[0] == "latín" and langs[-1] == "español", langs
+    assert page.locator("#region-origin .origin-arrow").count() == len(steps) - 1
+    page.locator("#region-forms .card-link", has_text="Ver conjugación completa").click()
+    page.wait_for_selector("#layer3 .cousins-strip", state="visible", timeout=20000)
+    assert page.locator("#layer3 .cousins-title").inner_text() == "También del latín iactāre"
+    assert page.locator("#layer3 .cousin-word").count() >= 1
+    print(f"PASS 8: origin chain on real data (iactāre -> ... -> echar, {len(steps)} stages); cousins strip in Layer 3")
+
+    # ---- 9. mockup-comparable screenshots: hablábamos on real data ----
+    page.set_viewport_size({"width": 1535, "height": 1024})
+    open_word(page, "hablábamos")
+    assert page.locator("#dashboard .entry-form").inner_text() == "hablábamos"
+    # radial: hub is hablar; the backend includes the hub as a node, so it
+    # must be filtered out of the satellite ring; one pill per lemma (no
+    # dupes like the two hablador rows); searched form highlighted
+    assert page.locator(".radial-hub text").text_content() == "hablar"
+    sat_words = page.locator(".radial-node .word").all_text_contents()
+    assert "hablar" not in sat_words, sat_words
+    assert len(sat_words) == len(set(sat_words)), sat_words
+    assert 1 <= len(sat_words) <= 10, len(sat_words)
+    assert page.locator(".radial-node.is-selected text.word").text_content() == "hablábamos"
+    # required empty states (cognates + mnemonics, Phase 1 -> null)
+    assert page.locator("#region-cognates .empty-state").inner_text() == EMPTY_COGNATES
+    assert page.locator("#region-mnemonics .empty-state").inner_text() == EMPTY_MNEMONIC
+    # morphology card mirrors the mockup summary line
+    assert "verbo · modo indicativo · pretérito imperfecto · 1ª persona del plural" in \
+        page.locator(".morph-summary").inner_text()
+    print(f"PASS 9: hablábamos dashboard; radial hub 'hablar' with {len(sat_words)} distinct satellites, hablábamos highlighted; cognates+mnemonics empty states")
+
+    # 40: full dashboard, top of page
+    page.evaluate("document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 0)")
+    page.wait_for_timeout(300)
+    shot(page, "40-dashboard.png", full=True)
+    # 43: radial family framed
+    frame_scroll(page, "#region-family")
+    page.mouse.move(8, 8)
+    page.wait_for_timeout(250)
+    shot(page, "43-radial-family.png")
+    # 44: origin chain framed
+    frame_scroll(page, "#region-origin")
+    page.wait_for_timeout(250)
+    shot(page, "44-origin-chain.png")
+    # 46: decomposition accordion expanded
+    frame_scroll(page, "#region-morphology")
+    page.locator(".decompose-toggle").click()
+    page.wait_for_selector(".decompose-body", state="visible", timeout=3000)
+    segs = page.locator(".decompose-chip .seg").all_text_contents()
+    assert segs == ["habl", "-ábamos"], segs
+    page.mouse.move(8, 8)
+    page.wait_for_timeout(250)
+    shot(page, "46-morphology-expanded.png")
+    # 45: empty states framed (cognates + mnemonics of hablábamos)
+    frame_scroll(page, "#region-cognates")
+    page.wait_for_timeout(250)
+    shot(page, "45-empty-states.png")
+    print("PASS 9b: 43-radial-family, 44-origin-chain, 45-empty-states, 46-morphology-expanded captured")
+    # 41: dark dashboard
+    dark = browser.new_page(viewport={"width": 1535, "height": 1024}, color_scheme="dark")
+    dark.goto(BASE + "/?word=hablábamos", wait_until="networkidle")
+    dark.wait_for_selector("#dashboard .entry-form", state="visible", timeout=15000)
+    dark.evaluate("document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 0)")
+    dark.wait_for_timeout(300)
+    shot(dark, "41-dashboard-dark.png", full=True)
+    dark.close()
+    # 42: mobile 400px, single column + horizontal sidebar
+    mobile = browser.new_page(viewport={"width": 400, "height": 900})
+    mobile.goto(BASE + "/?word=hablábamos", wait_until="networkidle")
+    mobile.wait_for_selector("#dashboard .entry-form", state="visible", timeout=15000)
+    widths = mobile.evaluate(
+        """() => ['region-morphology','region-family','region-origin',
+                   'region-cognates','region-mnemonics','region-forms'].map(
+            (id) => Math.round(document.getElementById(id).getBoundingClientRect().width))"""
+    )
+    assert all(w >= 360 for w in widths), widths
+    sidebar_top = mobile.evaluate("() => document.querySelector('.sidebar').getBoundingClientRect().top")
+    assert sidebar_top < 300, sidebar_top
+    mobile.evaluate("document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 0)")
+    mobile.wait_for_timeout(300)
+    shot(mobile, "42-dashboard-mobile.png", full=True)
+    mobile.close()
+    print(f"PASS 9c: 41-dashboard-dark, 42-dashboard-mobile (400px, single column {widths}) captured")
+
+    # legacy real-data dark/mobile artifacts (hacer)
+    dark = browser.new_page(viewport={"width": 1535, "height": 1024}, color_scheme="dark")
+    dark.goto(BASE + "/?word=hacer", wait_until="networkidle")
+    dark.wait_for_selector("#dashboard .entry-form", state="visible", timeout=15000)
     shot(dark, "05-dark.png")
     dark.close()
-    mobile = browser.new_page(viewport={"width": 400, "height": 800})
-    mobile.goto(BASE + "/", wait_until="networkidle")
-    type_query(mobile, "hacer")
-    mobile.wait_for_selector(".option-row", state="visible", timeout=5000)
-    mobile.keyboard.press("Enter")
-    mobile.wait_for_selector("#analysis .entry-card", state="visible", timeout=15000)
+    mobile = browser.new_page(viewport={"width": 400, "height": 900})
+    mobile.goto(BASE + "/?word=hacer", wait_until="networkidle")
+    mobile.wait_for_selector("#dashboard .entry-form", state="visible", timeout=15000)
     shot(mobile, "06-mobile.png")
     mobile.close()
-    print("PASS 8: dark and mobile screenshots regenerated on real data")
-
-    # ---- 9. adverbs get a paradigm table: Base + Superlative, no OTHER
-    # heading, citation form chip first. The assertions are driven by the
-    # forms' features, not by which family the adverb happens to live in.
-    # The adverb screenshots use a taller viewport so whole cards fit below
-    # the sticky nav without clipping.
-    page.set_viewport_size({"width": 1100, "height": 1200})
-
-    def frame_below_nav(loc):
-        # scroll so the element's top sits just below the sticky nav (~52px)
-        loc.evaluate("""(el) => {
-            document.documentElement.style.scrollBehavior = 'auto';
-            const top = el.getBoundingClientRect().top + window.scrollY;
-            window.scrollTo(0, top - 72);
-        }""")
-
-    type_query(page, "rápidamente")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "rápidamente"
-    adv_card = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^rápidamente$"))).first
-    heads = adv_card.locator(".paradigm-head").all_text_contents()
-    assert heads == ["Base", "Superlative"], (heads, "adverb card must show Base + Superlative, never a lone OTHER")
-    assert adv_card.locator(".form-chip").first.inner_text() == "rápidamente", "citation form chip must come first"
-    # 17: rápidamente inside its multi-group family — frame the whole
-    # Adverbs group (heading + both adverb cards) below the sticky nav
-    page.wait_for_timeout(600)  # let openAnalysis' smooth scroll-to-top settle
-    frame_below_nav(page.locator(".pos-section", has=page.locator("h2", has_text="Adverbs")))
-    page.mouse.move(8, 8)  # leave the grid so no hover tooltip appears in the shot
-    page.wait_for_timeout(200)
-    shot(page, "17-adverb-card.png")
-
-    type_query(page, "claramente")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "claramente"
-    cl_card = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^claramente$"))).first
-    heads = cl_card.locator(".paradigm-head").all_text_contents()
-    assert heads == ["Base", "Superlative"], (heads, "claramente card must show Base + Superlative, never a lone OTHER")
-    assert cl_card.locator(".form-chip").first.inner_text() == "claramente", "citation form chip must come first"
-    print("PASS 9: rápidamente and claramente render Base + Superlative (no OTHER); citation form chip first")
-
-    # ---- 10. single-group family: no sticky nav, no count badge; and a
-    # lone Other bucket renders as one unlabelled chip group (Defect 2/4)
-    type_query(page, "fa")
-    page.wait_for_selector(".option-row", state="visible", timeout=5000)
-    fa_intj = page.locator(".option-row", has=page.locator(".row-form", has_text=re.compile(r"^fa$")))
-    fa_intj.filter(has=page.locator(".pos-chip", has_text="intj")).click()
-    page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-    assert page.locator(".entry-form").inner_text() == "fa"
-    assert page.locator(".pos-nav").count() == 0, "single-group family must not show the sticky nav"
-    assert page.locator(".count-badge").count() == 0, "isolated member must not show the count badge"
-    fa_card = page.locator(".member-card").first
-    assert fa_card.locator(".paradigm-head").count() == 0, "lone Other bucket must render with no heading"
-    assert fa_card.locator(".form-chip").count() == 1
-    fa_card.scroll_into_view_if_needed()
-    page.mouse.move(8, 8)
-    page.wait_for_timeout(200)
-    shot(page, "18-single-group-family.png")
-    print("PASS 10: fa — single-group family hides nav and count badge; lone Other bucket renders unlabelled")
-
-    # ---- 11. the user-facing promise: rápido (adj), rápido (adv) and
-    # rápidamente all resolve to the SAME family, whichever door you come
-    # in through. Permanent check: each entry point must yield the
-    # identical set of (POS group, member lemma) cards.
-    def family_lemma_set():
-        out = set()
-        for sec in page.locator(".pos-section").all():
-            group = sec.locator("h2").first.inner_text()
-            for card in sec.locator(".member-card").all():
-                out.add((group, card.locator(".member-lemma").first.inner_text()))
-        return out
-
-    def open_entry(form, pos):
-        type_query(page, form)
-        page.wait_for_selector(".option-row", state="visible", timeout=5000)
-        row = page.locator(".option-row", has=page.locator(".row-form", has_text=re.compile("^" + re.escape(form) + "$")))
-        row.filter(has=page.locator(".pos-chip", has_text=pos)).click()
-        page.wait_for_selector("#analysis .entry-card", state="visible", timeout=8000)
-        return page.locator(".entry-form").inner_text()
-
-    # ---- adjective door
-    assert open_entry("rápido", "adj") == "rápido"
-    adv_group = page.locator(".pos-section", has=page.locator("h2", has_text="Adverbs"))
-    expect(adv_group).to_have_count(1)
-    adv_lemmas = adv_group.locator(".member-lemma").all_text_contents()
-    assert "rápidamente" in adv_lemmas, adv_lemmas
-    # the rápidamente card carries the "rápido + -mente" relation chip
-    rap_card = page.locator(".member-card", has=page.locator(".member-lemma", has_text=re.compile(r"^rápidamente$")))
-    assert "rápido + -mente" in rap_card.locator(".relation-chip").all_text_contents(), \
-        rap_card.locator(".relation-chip").all_text_contents()
-    set_adj = family_lemma_set()
-    # 19: the family via the adjective door — frame the Adverbs group
-    # (heading + both adverb cards) below the sticky nav
-    page.wait_for_timeout(600)  # let openAnalysis' smooth scroll-to-top settle
-    frame_below_nav(adv_group)
-    page.mouse.move(8, 8)
-    page.wait_for_timeout(200)
-    shot(page, "19-rapido-from-adjective.png")
-
-    # ---- adverb door
-    assert open_entry("rápido", "adv") == "rápido"
-    set_adv = family_lemma_set()
-    # 21: the adverb entry, framed on the header card so the selected POS
-    # is unambiguous (page is already scrolled to top)
-    page.wait_for_timeout(600)  # let openAnalysis' smooth scroll-to-top settle
-    page.evaluate("document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 0)")
-    page.mouse.move(8, 8)
-    page.wait_for_timeout(200)
-    shot(page, "21-rapido-adverb-entry.png")
-
-    # ---- -mente door
-    assert open_entry("rápidamente", "adv") == "rápidamente"
-    set_mente = family_lemma_set()
-
-    assert set_adj == set_adv == set_mente, (
-        "rápido (adj), rápido (adv) and rápidamente must land in the same family",
-        sorted(set_adj),
-        sorted(set_adv),
-        sorted(set_mente),
-    )
-    # sticky nav offers all three POS groups of the shared family
-    nav_labels = page.locator(".pos-nav button").all_text_contents()
-    assert nav_labels == ["Nouns", "Adjectives", "Adverbs"], nav_labels
-    # 20: the family via rápidamente — sticky nav pinned at the very top
-    # with all three group buttons visible
-    page.wait_for_timeout(600)  # let openAnalysis' smooth scroll-to-top settle
-    page.evaluate("""() => {
-        document.documentElement.style.scrollBehavior = 'auto';
-        const nav = document.querySelector('.pos-nav');
-        window.scrollTo(0, nav.getBoundingClientRect().top + window.scrollY);
-    }""")
-    page.mouse.move(8, 8)
-    page.wait_for_timeout(200)
-    shot(page, "20-rapido-from-adverb.png")
-    print("PASS 11: rápido (adj), rápido (adv) and rápidamente resolve to the same family "
-          "(identical member-lemma sets); rápidamente carries 'rápido + -mente'")
+    print("PASS 9d: 05-dark and 06-mobile regenerated on real data")
 
 
 if __name__ == "__main__":

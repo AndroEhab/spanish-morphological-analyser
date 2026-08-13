@@ -35,6 +35,7 @@ from threading import local
 
 import orjson
 
+from app import enrich
 from pipeline.normalize import fold as _fold
 
 _DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "morph.sqlite"
@@ -422,6 +423,7 @@ def _member_forms_map(conn: sqlite3.Connection, lemma_ids: list[int]) -> dict[in
                 "form": m["form"],
                 "features": " \u00b7 ".join(m["features"]) if m["features"] else "",
                 "is_lemma": bool(m["is_lemma"]),
+                "is_clitic": bool(m["is_clitic"]),
             }
             for m in merged
         ]
@@ -734,6 +736,31 @@ def _cousin_member(
     }
 
 
+def _morphology_alternatives(conn: sqlite3.Connection, key: str,
+                             exclude_lemma_id: int) -> list[dict]:
+    """Ranked alternative analyses of the same surface form under other
+    lemmas (design.md §16: "Other possible analysis (1)"). One entry per
+    lemma, best row as its representative, ranked by frequency desc."""
+    rows = conn.execute(
+        _SELECT_FORM + "WHERE f.key = ? AND f.lemma_id != ? ORDER BY f.id",
+        (key, exclude_lemma_id),
+    ).fetchall()
+    by_lemma: dict[int, list] = {}
+    for r in rows:
+        by_lemma.setdefault(r["lemma_id"], []).append(r)
+    ranked = []
+    for lid, group in by_lemma.items():
+        m = _merged(group)
+        ranked.append((m["freq"], {
+            "lemma": m["lemma"],
+            "pos": m["pos"],
+            "summary": enrich.spanish_summary(m["pos"], m["features"]),
+            "entry_id": str(m["id"]),
+        }))
+    ranked.sort(key=lambda item: (-item[0], item[1]["lemma"]))
+    return [item[1] for item in ranked]
+
+
 def analyze(entry_id: str) -> dict | None:
     """Family view for one form entry id; ``None`` -> 404."""
     try:
@@ -751,7 +778,7 @@ def analyze(entry_id: str) -> dict | None:
         return None
 
     fam = conn.execute(
-        "SELECT id, head_lemma_id, note FROM family WHERE id = ?", (family_id,)
+        "SELECT id, head_lemma_id, note, size FROM family WHERE id = ?", (family_id,)
     ).fetchone()
     if fam is None:
         return None
@@ -809,9 +836,76 @@ def analyze(entry_id: str) -> dict | None:
     has_etymon = _has_table(conn, "etymon")
     has_derivation = _has_table(conn, "derivation")
     selected_lemma_id = row["lemma_id"]
+    ancestry = _ancestry_for(conn, selected_lemma_id, selected_row["lemma"], has_etymon)
+
+    # ---- Phase 1 dashboard enrichment (docs/DESIGN_IMPLEMENTATION_PLAN.md §D) ----
+    # All new keys are additive and nullable; a null/empty value is the
+    # render trigger for the design's empty states.
+    selected_forms = forms_map.get(selected_lemma_id, [])
+    known_forms = [
+        (f["form"], f["features"].split(" \u00b7 ")) for f in selected_forms
+    ]
+    parts = enrich.pick_clean_analysis(selected["features"])
+    if selected["pos"] == "verb":
+        stem, desinence = enrich.split_lexeme(
+            selected["form"], parts, known_forms, selected["features"]
+        )
+    else:
+        stem, desinence = None, None  # the inventory is verbal; nouns never split
+    pos_label = enrich.spanish_pos_label(selected["pos"])
+    conjugation = enrich.conjugation_class(selected["lemma"], selected["pos"])
+    morphology = {
+        "posLabel": pos_label,
+        "summary": enrich.spanish_summary(selected["pos"], selected["features"]),
+        "lexeme": f"{stem}-" if stem else None,
+        "inflection": f"-{desinence}" if desinence else None,
+        "base": selected["lemma"],
+        "categoría": pos_label,
+        "conjugationClass": conjugation,
+        "conjugación": conjugation,
+        "decomposition": enrich.decomposition_items(
+            selected["form"], stem, desinence, selected["features"]
+        ),
+        "alternatives": _morphology_alternatives(conn, row["key"], row["lemma_id"]),
+    }
+
+    # Ranked ambiguity over the same surface form under other lemmas
+    # (design.md §16 / product spec §15: most-likely first).
+    family_preview = enrich.family_preview(
+        {
+            "lemma": head["word"],
+            "pos": head["pos"],
+            "gloss": head["gloss"] or "",
+            "lemma_id": head_id,
+        },
+        [
+            {
+                "lemma_id": m["id"],
+                "lemma": m["word"],
+                "pos": m["pos"],
+                "gloss": m["gloss"] or "",
+                "relation": m["relation"] or "",
+                "relation_label": m["relation_label"] or "",
+                "freq": m["freq"],
+                "is_head": m["id"] == head_id,
+                "relation_priority": enrich._RELATION_PRIORITY.get(m["relation"] or "", 6),
+            }
+            for m in members_sorted
+        ],
+        selected_lemma_id,
+        selected["form"],
+        selected["pos"],
+        selected["gloss"],
+        fam["size"] if fam["size"] is not None else len(members_sorted),
+    )
 
     return {
-        "selected": selected,
+        "query": selected["form"],
+        "selected": {
+            **selected,
+            "audio": None,  # Phase 2 (Spanish-edition sounds import)
+            "ipa": None,    # Phase 2
+        },
         "family": {
             "head": {
                 "lemma": head["word"],
@@ -822,8 +916,25 @@ def analyze(entry_id: str) -> dict | None:
             "groups": groups,
         },
         "tree": _family_tree(conn, head_id, members_sorted, forms_map, selected_lemma_id, has_derivation),
-        "ancestry": _ancestry_for(conn, selected_lemma_id, selected_row["lemma"], has_etymon),
+        "ancestry": ancestry,
         "cousins": _cousins_for(conn, selected_lemma_id, family_id, has_etymon),
+        "morphology": morphology,
+        "familyPreview": family_preview,
+        "origin": enrich.origin_view(ancestry),
+        "nearbyForms": enrich.nearby_forms(
+            selected["pos"], selected["features"],
+            [
+                {
+                    "form": f["form"],
+                    "features": f["features"].split(" \u00b7 "),
+                    "is_clitic": f["is_clitic"],
+                    "is_lemma": f["is_lemma"],
+                }
+                for f in selected_forms
+            ],
+        ),
+        "englishRelatives": None,  # Phase 3 (English kaikki edition)
+        "mnemonics": None,         # Phase 4
     }
 
 
