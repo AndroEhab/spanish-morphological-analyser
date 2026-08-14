@@ -710,6 +710,18 @@ def _write_sqlite(
         ("max_freq", str(_max_freq)),
     )
 
+    # ------------------------------------------------------------------
+    # English cognates (Phase 3, englishRelatives card).  Display-only:
+    # the table is created and filled AFTER the family graph is finalised
+    # and never feeds any edge type (pipeline/english_cognates.py).  The
+    # source file is gitignored; when absent the table stays empty and the
+    # API renders the documented §52 empty state.
+    # ------------------------------------------------------------------
+    from pipeline.english_cognates import import_english_cognates
+    import_english_cognates(
+        conn, ROOT / "kaikki.org-dictionary-English.jsonl", verbose=True
+    )
+
     # Finalize
     conn.execute("COMMIT")
     conn.execute("PRAGMA journal_mode=DELETE")

@@ -215,6 +215,38 @@ def test_analyze_echar_cousins_and_ancestry():
         assert res.status_code == 200
 
 
+def test_analyze_echar_english_relatives_populated():
+    # The fixture's echar family carries a real englishRelatives block
+    # mirroring the measured option-(b) payload (docs/COGNATES_FEASIBILITY.md).
+    data = _analyze_first("echar", form="echar", lemma="echar", pos="verb")
+    rel = data["englishRelatives"]
+    assert rel is not None
+    assert rel["sharedRoot"] == "iactare"
+    assert [it["word"] for it in rel["items"]] == [
+        "jettison", "jetty", "parge", "parget", "adjection", "subject",
+    ]
+    for it in rel["items"]:
+        assert set(it) == {"word", "gloss", "sharedRoot",
+                           "relationType", "explanation", "audio"}
+        assert it["audio"] is None
+        assert it["relationType"] in ("direct-cognate", "shared-latin-root")
+        assert it["sharedRoot"]
+    # norm matches are direct cognates and precede the norm_root channel;
+    # both channels render with their own shared root.
+    assert [it["relationType"] for it in rel["items"]] == [
+        "direct-cognate", "direct-cognate", "direct-cognate", "direct-cognate",
+        "shared-latin-root", "shared-latin-root",
+    ]
+    assert all(it["gloss"] for it in rel["items"])
+
+
+def test_analyze_hacer_english_relatives_null_empty_state():
+    # Families without English data keep the §52 empty state (the fixture
+    # default), exactly like the sqlite store returns None for hablar.
+    data = _analyze_first("hacer", form="hacer", lemma="hacer", pos="verb")
+    assert data["englishRelatives"] is None
+
+
 def test_analyze_mentir_synthesized_star_tree():
     # families without an explicit fixture tree synthesize a star: every
     # non-head member hangs directly off the head

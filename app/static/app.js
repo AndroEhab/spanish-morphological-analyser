@@ -2465,6 +2465,8 @@
 
   /* ---- cognates (Phase 3 data; §52 empty state before) ---- */
 
+  const COGNATES_PREVIEW = 8; // rows visible before "Ver más cognados" (§24)
+
   function cognatesView(data) {
     const frag = document.createDocumentFragment();
     const rel = data.englishRelatives;
@@ -2475,15 +2477,31 @@
     const intro = el("p", "origin-lead", `Palabras en inglés emparentadas con el latín ${rel.sharedRoot || ""}.`);
     frag.append(intro);
     const list = el("ul", "cognate-list");
-    for (const it of rel.items) {
+    rel.items.forEach((it, i) => {
       const li = document.createElement("li");
       li.className = "cognate-item";
+      if (i >= COGNATES_PREVIEW) li.classList.add("cognate-hidden");
       li.append(el("span", "cognate-word", it.word));
       if (it.gloss) li.append(el("span", "cognate-gloss", it.gloss));
       if (it.explanation) li.title = it.explanation;
       list.append(li);
-    }
+    });
     frag.append(list);
+    if (rel.items.length > COGNATES_PREVIEW) {
+      const link = el("button", "card-link cognates-more", "Ver más cognados");
+      link.type = "button";
+      const chev = el("span", "chevron");
+      chev.innerHTML = ICONS.chevronDown;
+      link.append(chev);
+      link.addEventListener("click", () => {
+        const hidden = list.querySelectorAll(".cognate-hidden");
+        const expanding = link.textContent.trim().startsWith("Ver más");
+        hidden.forEach((li) => li.classList.toggle("cognate-hidden", !expanding));
+        link.textContent = expanding ? "Ver menos" : "Ver más cognados";
+        link.append(chev);
+      });
+      frag.append(link);
+    }
     return frag;
   }
 

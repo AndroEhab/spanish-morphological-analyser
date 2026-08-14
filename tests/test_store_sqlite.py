@@ -71,6 +71,16 @@ _SCHEMA = [
     "CREATE INDEX etymon_lemma_idx ON etymon(lemma_id)",
     "CREATE INDEX etymon_norm_idx ON etymon(norm)",
     "CREATE INDEX etymon_norm_root_idx ON etymon(norm_root)",
+    """CREATE TABLE english_cognate (
+        id INTEGER PRIMARY KEY,
+        word TEXT NOT NULL,
+        pos TEXT NOT NULL,
+        gloss TEXT,
+        norm TEXT NOT NULL,
+        norm_root TEXT NOT NULL
+    )""",
+    "CREATE INDEX english_cognate_norm_idx ON english_cognate(norm)",
+    "CREATE INDEX english_cognate_norm_root_idx ON english_cognate(norm_root)",
 ]
 
 
@@ -217,6 +227,24 @@ def _build_db(path) -> None:
             "VALUES (?, ?, ?, ?, '[\"citation form\"]', 1, 0, ?)",
             (200 + lid, word, _fold_key(word), lid, con.execute("SELECT freq FROM lemma WHERE id=?", (lid,)).fetchone()[0]),
         )
+
+    # english_cognate rows (Phase 3, englishRelatives card): one row per
+    # (English word, cited Latin norm); the gloss belongs to the entry that
+    # cited that norm.
+    con.executemany(
+        "INSERT INTO english_cognate (word, pos, gloss, norm, norm_root) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [
+            ("jettison", "verb", "to eject", "iacto", "iacto"),
+            ("jetty", "noun", "a pier", "iacto", "iacto"),
+            ("parge", "verb", "to apply parge", "iactare", "iactare"),
+            ("parget", "noun", "gypsum", "iacto", "iacto"),
+            ("adjection", "noun", "act of adding", "adiecto", "iecto"),
+            ("subject", "noun", "a topic", "subiecto", "iecto"),
+            ("fact", "noun", "a deed", "facere", "facere"),
+            ("mental", "adj", "of the mind", "mens", "mens"),
+        ],
+    )
 
     # meta counts deliberately differ from reality (n_forms) to prove that
     # health() reads meta rather than COUNT(*).
@@ -524,6 +552,52 @@ def test_analyze_no_etymon_rows_empty_shapes(store):
     # the tree still renders (head-only family)
     assert data["tree"]["root_lemma_id"] == 4
     assert data["tree"]["nodes"][0]["lemma"] == "mentar"
+
+
+def test_analyze_english_relatives_norm_and_root_channels(store):
+    # echar cites iacto/iactare exactly (norm channel) and iecto via the
+    # stripped roots (norm_root channel): the card shows both channels,
+    # direct cognates first, each with the gloss of the row that matched.
+    data, _ = _analyze_for(store, "echar")
+    rel = data["englishRelatives"]
+    assert rel is not None
+    assert rel["sharedRoot"] == "iactare"
+    assert [it["word"] for it in rel["items"]] == [
+        "jettison", "jetty", "parge", "parget", "adjection", "subject",
+    ]
+    assert [it["relationType"] for it in rel["items"]] == [
+        "direct-cognate", "direct-cognate", "direct-cognate", "direct-cognate",
+        "shared-latin-root", "shared-latin-root",
+    ]
+    for it in rel["items"]:
+        assert set(it) == {"word", "gloss", "sharedRoot",
+                           "relationType", "explanation", "audio"}
+        assert it["audio"] is None and it["gloss"] and it["sharedRoot"]
+        assert it["explanation"]
+    # the norm_root items anchor on the stripped root, not the citation
+    assert rel["items"][4]["sharedRoot"] == "iecto"
+
+
+def test_analyze_english_relatives_exact_norm_only(store):
+    # hacer cites facere exactly: only the norm channel fires; the English
+    # row's gloss survives the round trip.
+    data, _ = _analyze_for(store, "hacer")
+    rel = data["englishRelatives"]
+    assert rel is not None
+    assert [it["word"] for it in rel["items"]] == ["fact"]
+    assert rel["items"][0]["relationType"] == "direct-cognate"
+    assert rel["items"][0]["gloss"] == "a deed"
+
+
+def test_analyze_english_relatives_fanout_cap(store, monkeypatch):
+    # mens has 3 Spanish descendants; tighten the cap and the card empties
+    # exactly like the cousins cap behaves.
+    data, _ = _analyze_for(store, "mental")
+    assert data["englishRelatives"] is not None
+    assert [it["word"] for it in data["englishRelatives"]["items"]] == ["mental"]
+    monkeypatch.setattr(store, "_COUSIN_FANOUT_CAP", 2)
+    data2, _ = _analyze_for(store, "mental")
+    assert data2["englishRelatives"] is None
 
 
 def test_analyze_without_ancestry_tables_degrades(store, tmp_path, monkeypatch):

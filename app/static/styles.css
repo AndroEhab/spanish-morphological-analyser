@@ -991,6 +991,8 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   color: var(--text-muted);
 }
 
+.cognate-hidden { display: none; }
+
 .mnemonic-text {
   margin: 0;
   font-size: .95rem;

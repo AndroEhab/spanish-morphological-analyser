@@ -445,7 +445,7 @@ def analyze(entry_id: str) -> dict | None:
                 for f in member["forms"]
             ],
         ),
-        "englishRelatives": None,  # Phase 3 (English kaikki edition)
+        "englishRelatives": family.get("englishRelatives"),
         "mnemonics": None,         # Phase 4
     }
 

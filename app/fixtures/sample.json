@@ -11769,6 +11769,59 @@
       "entry_id": "objetar::objetar::verb"
      }
     ]
+   },
+   "englishRelatives": {
+    "sharedRoot": "iactare",
+    "items": [
+     {
+      "word": "jettison",
+      "gloss": "to eject from a boat, submarine, aircraft",
+      "sharedRoot": "iactare",
+      "relationType": "direct-cognate",
+      "explanation": "Del latín «iactare».",
+      "audio": null
+     },
+     {
+      "word": "jetty",
+      "gloss": "to construct a pier",
+      "sharedRoot": "iactare",
+      "relationType": "direct-cognate",
+      "explanation": "Del latín «iactare».",
+      "audio": null
+     },
+     {
+      "word": "parge",
+      "gloss": "to apply a parge on to a surface",
+      "sharedRoot": "iactare",
+      "relationType": "direct-cognate",
+      "explanation": "Del latín «iactare».",
+      "audio": null
+     },
+     {
+      "word": "parget",
+      "gloss": "gypsum",
+      "sharedRoot": "iactare",
+      "relationType": "direct-cognate",
+      "explanation": "Del latín «iactare».",
+      "audio": null
+     },
+     {
+      "word": "adjection",
+      "gloss": "act of adjecting or adding",
+      "sharedRoot": "iectare",
+      "relationType": "shared-latin-root",
+      "explanation": "Comparte la raíz latina «iectare» tras eliminar el prefijo latino.",
+      "audio": null
+     },
+     {
+      "word": "subject",
+      "gloss": "to cause to undergo",
+      "sharedRoot": "iectare",
+      "relationType": "shared-latin-root",
+      "explanation": "Comparte la raíz latina «iectare» tras eliminar el prefijo latino.",
+      "audio": null
+     }
+    ]
    }
   },
   {

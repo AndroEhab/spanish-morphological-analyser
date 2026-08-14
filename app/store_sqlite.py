@@ -707,6 +707,96 @@ def _cousins_for(
     return None
 
 
+def _english_relatives_for(
+    conn: sqlite3.Connection,
+    lemma_id: int,
+    has_english: bool,
+) -> dict | None:
+    """English words sharing a Latin etymon with this lemma (Phase 3).
+
+    The join is the measured option (b): exact ``norm`` first, ``norm_root``
+    (one Latin prefix stripped) as the fallback channel — the same pair of
+    keys the cousins strip uses, with the same 60-descendant fan-out cap
+    (docs/COGNATES_FEASIBILITY.md, 95.0% strict on the post-refinement
+    audit).  ``english_cognate`` is a display-only side table; family
+    membership never influences this card and vice versa.  Returns None
+    when nothing matches or the table is absent (the §52 empty state).
+    """
+    if not has_english:
+        return None
+    rows = conn.execute(
+        "SELECT depth, word, norm, norm_root FROM etymon "
+        "WHERE lemma_id = ? AND lang LIKE 'la%' ORDER BY depth DESC",
+        (lemma_id,),
+    ).fetchall()
+    if not rows:
+        return None
+
+    matches: list[dict] = []      # norm-channel matches first (stronger)
+    root_matches: list[dict] = []  # norm_root-channel matches
+    for row in rows:
+        norm = row["norm"] or ""
+        if not norm:
+            continue
+        fanout = _cousin_fanout(conn, "norm", norm)
+        if fanout > _COUSIN_FANOUT_CAP:
+            continue
+        for eng in conn.execute(
+            "SELECT word, pos, gloss FROM english_cognate WHERE norm = ? "
+            "ORDER BY word",
+            (norm,),
+        ).fetchall():
+            matches.append({
+                "word": eng["word"], "pos": eng["pos"], "gloss": eng["gloss"] or "",
+                "shared_root": norm, "kind": "norm",
+            })
+        nroot = row["norm_root"] or norm
+        fanout_root = _cousin_fanout(conn, "norm_root", nroot)
+        if fanout_root > _COUSIN_FANOUT_CAP:
+            continue
+        for eng in conn.execute(
+            "SELECT word, pos, gloss FROM english_cognate WHERE norm_root = ? "
+            "ORDER BY word",
+            (nroot,),
+        ).fetchall():
+            root_matches.append({
+                "word": eng["word"], "pos": eng["pos"], "gloss": eng["gloss"] or "",
+                "shared_root": nroot, "kind": "norm_root",
+            })
+
+    # Dedupe by word: prefer the stronger (norm) channel and keep the gloss
+    # of the entry that actually cited the matched norm (homograph hygiene —
+    # peel < pala vs peel < pilare each carry their own row's gloss).
+    best: dict[str, dict] = {}
+    for item in matches + root_matches:
+        if item["word"] not in best:
+            best[item["word"]] = item
+    if not best:
+        return None
+
+    # Card anchor: the deepest usable Latin etymon of this lemma (the
+    # accent-stripped norm — the mockup's "fabulare", not "fābulārī").
+    shared_root = rows[0]["norm"] or rows[0]["word"]
+    items = []
+    for item in sorted(best.values(),
+                       key=lambda x: (x["kind"] != "norm", x["word"])):
+        items.append({
+            "word": item["word"],
+            "gloss": item["gloss"],
+            "sharedRoot": item["shared_root"],
+            "relationType": ("direct-cognate" if item["kind"] == "norm"
+                             else "shared-latin-root"),
+            "explanation": (
+                f"Del latín «{item['shared_root']}»."
+                if item["kind"] == "norm" else
+                f"Comparte la raíz latina «{item['shared_root']}» tras "
+                "eliminar el prefijo latino."
+            ),
+            "audio": None,
+        })
+    return {"sharedRoot": shared_root, "items": items}
+
+
 def _cousin_member(
     conn: sqlite3.Connection,
     m,
@@ -835,6 +925,7 @@ def analyze(entry_id: str) -> dict | None:
     # the new keys degrade to the documented empty shapes.
     has_etymon = _has_table(conn, "etymon")
     has_derivation = _has_table(conn, "derivation")
+    has_english = _has_table(conn, "english_cognate")
     selected_lemma_id = row["lemma_id"]
     ancestry = _ancestry_for(conn, selected_lemma_id, selected_row["lemma"], has_etymon)
 
@@ -933,7 +1024,9 @@ def analyze(entry_id: str) -> dict | None:
                 for f in selected_forms
             ],
         ),
-        "englishRelatives": None,  # Phase 3 (English kaikki edition)
+        "englishRelatives": _english_relatives_for(
+            conn, selected_lemma_id, has_english
+        ),
         "mnemonics": None,         # Phase 4
     }
 
